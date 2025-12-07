@@ -536,85 +536,165 @@ class TaskDescriptionGenerator:
     def generate_descriptions(self, 
                             frame_ranges: List[Dict],
                             dataset = None,
-                            cache: Dict = None) -> List[Dict]:
+                            cache: Dict = None,
+                            start_index: int = 0,
+                            completed_ranges: List[Dict] = None,
+                            checkpoint_dir = None,
+                            checkpoint_interval: int = 10) -> List[Dict]:
         """
-        为所有帧范围生成任务描述
+        为所有帧范围生成任务描述（支持断点续传）
         
         Args:
             frame_ranges: 帧范围列表
             dataset: LeRobot数据集 (用于VLM获取图像)
             cache: 缓存已生成的描述
+            start_index: 开始索引（用于断点续传）
+            completed_ranges: 已完成的范围列表
+            checkpoint_dir: 检查点保存目录
+            checkpoint_interval: 每处理多少个保存一次检查点
             
         Returns:
             添加了new_task字段的帧范围列表
         """
+        import json
+        from pathlib import Path
+        from datetime import datetime
+        
         if cache is None:
             cache = {}
         
-        result = []
+        # 使用已完成的结果
+        result = completed_ranges.copy() if completed_ranges else []
         
         print(f"🤖 使用{self.llm.__class__.__name__}生成任务描述...")
+        if start_index > 0:
+            print(f"   ℹ️  从索引 {start_index} 继续处理")
         
-        for i, frame_range in enumerate(frame_ranges):
+        total = len(frame_ranges)
+        
+        for i in range(start_index, total):
+            frame_range = frame_ranges[i]
+            
             if i % 10 == 0:
-                print(f"  进度: {i}/{len(frame_ranges)}")
+                print(f"  进度: {i}/{total}")
             
-            # 创建缓存键
-            # 注意：对于VLM，如果只用action_type和task做key，会忽略图像差异。
-            # 如果是VLM，我们可能不应该使用简单的缓存，或者应该包含keyframe_index
-            if isinstance(self.llm, GPTVLM):
-                cache_key = f"{frame_range['action_type']}_{frame_range['task']}_{frame_range['keyframe_index']}"
-            else:
-                cache_key = f"{frame_range['action_type']}_{frame_range['task']}"
-            
-            if cache_key in cache:
-                new_task = cache[cache_key]
-            else:
-                # 准备上下文
-                context = {'episode_index': frame_range['episode_index']}
+            try:
+                # 创建缓存键
+                if isinstance(self.llm, GPTVLM):
+                    cache_key = f"{frame_range['action_type']}_{frame_range['task']}_{frame_range['keyframe_index']}"
+                else:
+                    cache_key = f"{frame_range['action_type']}_{frame_range['task']}"
                 
-                # 如果是VLM且提供了数据集，获取图像
-                if isinstance(self.llm, GPTVLM) and dataset is not None:
-                    try:
-                        start_idx = int(frame_range['frame_start'])
-                        end_idx = int(frame_range['frame_end']) - 1 # frame_end is exclusive
-                        key_idx = int(frame_range['keyframe_index'])
-                        
-                        # 获取首尾帧和关键帧 (两个摄像头)
-                        # LeRobot dataset returns dict with 'observation.images.image' and 'observation.images.image2'
-                        first_item = dataset[start_idx]
-                        last_item = dataset[end_idx]
-                        key_item = dataset[key_idx]
-                        
-                        # Cam1 图像
-                        context['first_frame_cam1'] = first_item['observation.images.image']
-                        context['last_frame_cam1'] = last_item['observation.images.image']
-                        context['key_frame_cam1'] = key_item['observation.images.image']
-                        
-                        # Cam2 图像
-                        context['first_frame_cam2'] = first_item['observation.images.image2']
-                        context['last_frame_cam2'] = last_item['observation.images.image2']
-                        context['key_frame_cam2'] = key_item['observation.images.image2']
-                    except Exception as e:
-                        print(f"⚠️  获取图像失败: {e}")
-                        import traceback
-                        traceback.print_exc()
+                if cache_key in cache:
+                    new_task = cache[cache_key]
+                else:
+                    # 准备上下文
+                    context = {'episode_index': frame_range['episode_index']}
+                    
+                    # 如果是VLM且提供了数据集，获取图像
+                    if isinstance(self.llm, GPTVLM) and dataset is not None:
+                        try:
+                            start_idx = int(frame_range['frame_start'])
+                            end_idx = int(frame_range['frame_end']) - 1
+                            key_idx = int(frame_range['keyframe_index'])
+                            
+                            first_item = dataset[start_idx]
+                            last_item = dataset[end_idx]
+                            key_item = dataset[key_idx]
+                            
+                            # Cam1 图像
+                            context['first_frame_cam1'] = first_item['observation.images.image']
+                            context['last_frame_cam1'] = last_item['observation.images.image']
+                            context['key_frame_cam1'] = key_item['observation.images.image']
+                            
+                            # Cam2 图像
+                            context['first_frame_cam2'] = first_item['observation.images.image2']
+                            context['last_frame_cam2'] = last_item['observation.images.image2']
+                            context['key_frame_cam2'] = key_item['observation.images.image2']
+                        except Exception as e:
+                            print(f"⚠️  获取图像失败: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    # 生成新的任务描述
+                    new_task = self.llm.generate_task_description(
+                        action_type=frame_range['action_type'],
+                        original_task=frame_range['task'],
+                        context=context
+                    )
+                    cache[cache_key] = new_task
                 
-                # 生成新的任务描述
-                new_task = self.llm.generate_task_description(
-                    action_type=frame_range['action_type'],
-                    original_task=frame_range['task'],
-                    context=context
-                )
-                cache[cache_key] = new_task
-            
-            # 添加到结果
-            range_with_desc = frame_range.copy()
-            range_with_desc['new_task'] = new_task
-            result.append(range_with_desc)
+                # 添加到结果
+                range_with_desc = frame_range.copy()
+                range_with_desc['new_task'] = new_task
+                result.append(range_with_desc)
+                
+                # 定期保存检查点
+                if checkpoint_dir and (i + 1) % checkpoint_interval == 0:
+                    self._save_checkpoint(checkpoint_dir, result, i, total)
+                    
+            except Exception as e:
+                print(f"\n❌ 处理索引 {i} 时出错: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # 出错时立即保存检查点
+                if checkpoint_dir:
+                    print(f"💾 保存检查点...")
+                    self._save_checkpoint(checkpoint_dir, result, i, total, error=True)
+                    print(f"✓ 检查点已保存，可以使用 --resume-from 参数继续")
+                
+                # 抛出异常以终止程序
+                raise
         
         print(f"✓ 任务描述生成完成")
+        
+        # 保存最终检查点
+        if checkpoint_dir:
+            self._save_checkpoint(checkpoint_dir, result, total - 1, total, final=True)
+        
         return result
+    
+    def _save_checkpoint(self, checkpoint_dir, completed_ranges, last_index, total, error=False, final=False):
+        """保存检查点"""
+        from pathlib import Path
+        from datetime import datetime
+        import json
+        
+        checkpoint_dir = Path(checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if final:
+            filename = f"checkpoint_final.json"
+        elif error:
+            filename = f"checkpoint_error_{timestamp}_idx{last_index}.json"
+        else:
+            filename = f"checkpoint_progress_{timestamp}_idx{last_index}.json"
+        
+        checkpoint_path = checkpoint_dir / filename
+        
+        checkpoint_data = {
+            'timestamp': timestamp,
+            'last_index': last_index,
+            'total': total,
+            'progress': f"{last_index + 1}/{total}",
+            'completed_count': len(completed_ranges),
+            'completed_ranges': completed_ranges,
+            'error': error
+        }
+        
+        with open(checkpoint_path, 'w', encoding='utf-8') as f:
+            json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+        
+        # 同时保存为 latest 方便恢复
+        latest_path = checkpoint_dir / "checkpoint_latest.json"
+        with open(latest_path, 'w', encoding='utf-8') as f:
+            json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+        
+        if not error and not final:
+            print(f"  💾 检查点: {filename} ({last_index + 1}/{total})")
 
 
 if __name__ == '__main__':

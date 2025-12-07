@@ -17,6 +17,8 @@ from pathlib import Path
 import json
 import sys
 from typing import Optional
+import time
+from datetime import datetime
 
 # 添加模块路径
 sys.path.insert(0, str(Path(__file__).parent))
@@ -85,12 +87,43 @@ def generate_task_descriptions(frame_ranges: list,
                                api_base: Optional[str] = None,
                                api_version: Optional[str] = None,
                                model: Optional[str] = None,
-                               fast_mode: bool = False) -> list:
+                               fast_mode: bool = False,
+                               checkpoint_dir: Optional[Path] = None,
+                               resume_from: Optional[str] = None) -> list:
     """
-    为关键帧生成任务描述
+    为关键帧生成任务描述（支持断点续传）
+    
+    Args:
+        checkpoint_dir: 检查点保存目录
+        resume_from: 从检查点文件恢复
     """
     mode_str = "快速模式(2帧)" if fast_mode else "精细模式(6帧)"
     print(f"\n🤖 生成任务描述... [{mode_str}]")
+    
+    # 准备检查点目录
+    if checkpoint_dir:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        print(f"💾 检查点保存: {checkpoint_dir}")
+    
+    # 尝试从检查点恢复
+    start_idx = 0
+    completed_ranges = []
+    
+    if resume_from and Path(resume_from).exists():
+        print(f"\n📖 从检查点恢复: {resume_from}")
+        try:
+            with open(resume_from, 'r', encoding='utf-8') as f:
+                checkpoint_data = json.load(f)
+            
+            completed_ranges = checkpoint_data.get('completed_ranges', [])
+            start_idx = checkpoint_data.get('last_index', 0) + 1
+            
+            print(f"✓ 已恢复 {len(completed_ranges)} 个已完成的任务描述")
+            print(f"✓ 从索引 {start_idx}/{len(frame_ranges)} 继续处理")
+        except Exception as e:
+            print(f"⚠️  读取检查点失败: {e}，从头开始")
+            start_idx = 0
+            completed_ranges = []
     
     kwargs = {'provider': provider}
     if api_key:
@@ -106,7 +139,14 @@ def generate_task_descriptions(frame_ranges: list,
     
     generator = TaskDescriptionGenerator(**kwargs)
     
-    ranges_with_desc = generator.generate_descriptions(frame_ranges, dataset=dataset)
+    # 带断点保存的描述生成
+    ranges_with_desc = generator.generate_descriptions(
+        frame_ranges, 
+        dataset=dataset,
+        start_index=start_idx,
+        completed_ranges=completed_ranges,
+        checkpoint_dir=checkpoint_dir
+    )
     
     return ranges_with_desc
 
@@ -199,6 +239,10 @@ def main():
                        help='指定LLM模型名称 (例如: gpt-4o, gpt-4-turbo, o1-preview)')
     parser.add_argument('--llm-fast-mode', action='store_true',
                        help='GPT快速模式：仅上传2帧图像(cam1首尾帧)，处理速度更快')
+    parser.add_argument('--checkpoint-interval', type=int, default=10,
+                       help='检查点保存间隔（每处理多少个保存一次，默认10）')
+    parser.add_argument('--resume-from', type=str, default=None,
+                       help='从检查点文件恢复（例如：./cut_dataset/checkpoints/checkpoint_latest.json）')
     parser.add_argument('--skip-cutting', action='store_true',
                        help='跳过数据集裁剪，仅生成分析')
     parser.add_argument('--load-ranges', type=str, default=None,
@@ -243,6 +287,8 @@ def main():
         )
         
         # 生成任务描述
+        checkpoint_dir = output_dir / 'checkpoints' if output_dir else None
+        
         frame_ranges = generate_task_descriptions(
             frame_ranges,
             dataset=dataset,
@@ -251,7 +297,9 @@ def main():
             api_base=args.llm_api_base,
             api_version=args.llm_api_version,
             model=args.llm_model,
-            fast_mode=args.llm_fast_mode
+            fast_mode=args.llm_fast_mode,
+            checkpoint_dir=checkpoint_dir,
+            resume_from=args.resume_from
         )
         
         # 保存帧范围信息
