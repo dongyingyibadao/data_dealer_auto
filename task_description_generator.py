@@ -660,6 +660,8 @@ class TaskDescriptionGenerator:
         from pathlib import Path
         from datetime import datetime
         import json
+        import torch
+        import numpy as np
         
         checkpoint_dir = Path(checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -675,13 +677,27 @@ class TaskDescriptionGenerator:
         
         checkpoint_path = checkpoint_dir / filename
         
+        # 清理completed_ranges中的Tensor对象，只保留可序列化的数据
+        cleaned_ranges = []
+        for range_item in completed_ranges:
+            cleaned_item = {}
+            for key, value in range_item.items():
+                # 跳过Tensor和numpy数组（图像数据）
+                if isinstance(value, (torch.Tensor, np.ndarray)):
+                    continue
+                # 跳过包含image的键（可能是图像数据）
+                if 'image' in key.lower() or 'frame' in key.lower():
+                    continue
+                cleaned_item[key] = value
+            cleaned_ranges.append(cleaned_item)
+        
         checkpoint_data = {
             'timestamp': timestamp,
             'last_index': last_index,
             'total': total,
             'progress': f"{last_index + 1}/{total}",
-            'completed_count': len(completed_ranges),
-            'completed_ranges': completed_ranges,
+            'completed_count': len(cleaned_ranges),
+            'completed_ranges': cleaned_ranges,
             'error': error
         }
         
