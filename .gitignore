@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data files
+cut_dataset/
+*.parquet
+*.hdf5
+*.h5
+
+# Logs
+*.log
+
+# Test outputs
+/tmp/
+test_output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Large files
+*.tar.gz
+*.zip
+*.tar
+HuggingFaceVLA_cus.tar.gz*
+
+# Temporary files
+*.tmp
+*.bak
