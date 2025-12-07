@@ -98,6 +98,47 @@ python auto_cut_dataset.py \
   --save-mode lerobot
 ```
 
+## 💾 使用Checkpoint功能（处理大数据集）
+
+处理大规模数据集时（如270k帧），使用checkpoint功能防止数据丢失：
+
+### 启用自动checkpoint
+
+```bash
+python auto_cut_dataset.py \
+  --llm-provider gpt \
+  --llm-api-key "your-api-key" \
+  --llm-api-base "https://gpt.yunstorm.com/" \
+  --llm-model "gpt-4o" \
+  --checkpoint-interval 10
+```
+
+**checkpoint功能**:
+- ✅ 每10个任务自动保存进度
+- ✅ 错误时立即保存checkpoint
+- ✅ 支持断点续传
+
+### 从checkpoint恢复
+
+如果处理中断，使用相同参数 + `--resume-from`：
+
+```bash
+python auto_cut_dataset.py \
+  --llm-provider gpt \
+  --llm-api-key "your-api-key" \
+  --llm-api-base "https://gpt.yunstorm.com/" \
+  --llm-model "gpt-4o" \
+  --resume-from ./cut_dataset/checkpoints/checkpoint_latest.json
+```
+
+### 使用交互式恢复脚本
+
+```bash
+bash scripts/run_with_checkpoint.sh
+```
+
+脚本会自动检测checkpoint文件并询问是否恢复。
+
 **VLM会分析6张图片**（两个摄像头×3帧）来准确识别操作对象。
 
 ## 📊 常用参数
@@ -168,9 +209,52 @@ print(df)
 
 ## 📚 下一步
 
-- 查看 [README.md](README.md) 了解完整功能
+- 查看 [README.md](../README.md) 了解完整功能
 - 查看 [USAGE_GUIDE.md](USAGE_GUIDE.md) 了解详细用法
+- 查看 [CHECKPOINT_GUIDE.md](CHECKPOINT_GUIDE.md) 了解checkpoint功能
 - 查看 [PROMPT_CUSTOMIZATION_GUIDE.md](PROMPT_CUSTOMIZATION_GUIDE.md) 优化VLM
+
+## 📁 项目结构
+
+```
+data_dealer_auto/
+├── README.md                    # 项目概览
+├── auto_cut_dataset.py          # 主程序
+├── gripper_detector.py          # 夹爪检测
+├── task_description_generator.py # 任务描述生成
+├── dataset_cutter.py            # 数据裁剪
+│
+├── docs/                        # 📚 文档
+│   ├── QUICK_START.md          # 本文件
+│   ├── USAGE_GUIDE.md          # 详细指南
+│   ├── CHECKPOINT_GUIDE.md     # Checkpoint指南
+│   ├── GPT_FAST_MODE_GUIDE.md  # GPT快速模式
+│   └── ...
+│
+├── scripts/                     # 🔧 工具脚本
+│   ├── run_with_checkpoint.sh  # Checkpoint恢复脚本
+│   ├── visualize_merging.py    # 可视化
+│   └── diagnose_gripper.py     # 诊断工具
+│
+└── tests/                       # 🧪 测试脚本
+    ├── test_checkpoint.py       # Checkpoint测试
+    ├── test_azure_gpt.py        # GPT API测试
+    └── ...
+```
+
+## 🆘 需要帮助？
+
+```bash
+# 查看所有参数
+python auto_cut_dataset.py --help
+
+# 运行测试
+python tests/test_checkpoint.py
+python tests/test_azure_gpt.py
+
+# 使用交互式脚本
+bash scripts/run_with_checkpoint.sh
+```
 
 ---
 

@@ -180,7 +180,20 @@ python auto_cut_dataset.py [OPTIONS]
     - 速度提升：约3倍
   示例：--llm-fast-mode
 
---llm-provider {local, qwen, deepseek}
+--checkpoint-interval N
+  说明：checkpoint保存间隔（每处理N个任务保存一次）
+  默认：10
+  用途：防止长时间运行时数据丢失
+  示例：--checkpoint-interval 20
+  输出：./cut_dataset/checkpoints/checkpoint_*.json
+
+--resume-from FILE
+  说明：从checkpoint文件恢复运行
+  用途：中断后继续处理，不会重复已完成的任务
+  示例：--resume-from ./cut_dataset/checkpoints/checkpoint_latest.json
+  注意：需要使用与中断前相同的参数
+
+--llm-provider {local, qwen, deepseek, gpt}
   说明：任务描述生成方法
   选项：
     local     - 无需API，使用规则生成（默认）
@@ -330,8 +343,43 @@ python auto_cut_dataset.py [OPTIONS]
   
   输出到：/data/my_dataset/
   用途：组织多个数据集或使用外部存储
-  输出到：/data/my_dataset/
-  用途：组织多个数据集或使用外部存储
+
+📌 案例9：大数据集处理 + Checkpoint保护（推荐）🛡️
+  
+  # 处理完整数据集（270k帧），带checkpoint保护
+  python auto_cut_dataset.py \
+    --llm-provider gpt \
+    --llm-api-key 5ffef770a5b148c5920b7b16329e30fa \
+    --llm-api-base https://gpt.yunstorm.com/ \
+    --llm-api-version 2025-01-01-preview \
+    --llm-model gpt-4o \
+    --checkpoint-interval 10
+  
+  # 如果中断，从checkpoint恢复
+  python auto_cut_dataset.py \
+    --llm-provider gpt \
+    --llm-api-key 5ffef770a5b148c5920b7b16329e30fa \
+    --llm-api-base https://gpt.yunstorm.com/ \
+    --llm-api-version 2025-01-01-preview \
+    --llm-model gpt-4o \
+    --resume-from ./cut_dataset/checkpoints/checkpoint_latest.json
+  
+  # 或使用交互式脚本
+  bash scripts/run_with_checkpoint.sh
+  
+  优势：
+    ✓ 自动保存进度（每10个任务）
+    ✓ 错误时立即保存checkpoint
+    ✓ 支持断点续传，不丢失进度
+    ✓ 处理大规模数据集必备
+  
+  Checkpoint文件位置：
+    - checkpoint_latest.json: 最新状态（用于恢复）
+    - checkpoint_progress_*.json: 定期保存
+    - checkpoint_error_*.json: 错误时保存
+    - checkpoint_final.json: 完成时保存
+  
+  详细文档：docs/CHECKPOINT_GUIDE.md
 
 5️⃣ 输出说明
 ─────────────────────────────────────────────────────────────────────────────
@@ -469,6 +517,42 @@ A: 优化建议：
    2. 使用GPU加速（修改代码中的device）
    3. 在SSD上运行
    4. 增加帧批处理大小
+   5. 使用GPT快速模式：--llm-fast-mode（速度提升3倍）
+
+Q: 处理大数据集时如何防止数据丢失？
+A: 使用checkpoint功能：
+   1. 启用自动checkpoint：--checkpoint-interval 10
+   2. 程序会每10个任务保存一次进度
+   3. 错误时自动保存checkpoint
+   4. 中断后使用 --resume-from 恢复
+   
+   示例：
+   # 初始运行
+   python auto_cut_dataset.py [参数] --checkpoint-interval 10
+   
+   # 如果中断，恢复运行
+   python auto_cut_dataset.py [相同参数] \
+     --resume-from ./cut_dataset/checkpoints/checkpoint_latest.json
+   
+   详见：docs/CHECKPOINT_GUIDE.md
+
+Q: 如何查看checkpoint状态？
+A: 查看checkpoint文件内容：
+   cat ./cut_dataset/checkpoints/checkpoint_latest.json | python -m json.tool
+   
+   包含信息：
+   - completed_tasks: 已完成的任务列表
+   - completed_ranges: 已处理的索引范围
+   - timestamp: 保存时间
+   - total_completed: 完成总数
+
+Q: checkpoint文件在哪里？
+A: 默认位置：./cut_dataset/checkpoints/
+   文件类型：
+   - checkpoint_latest.json: 最新状态（用于恢复）
+   - checkpoint_progress_*.json: 定期保存的进度
+   - checkpoint_error_*.json: 错误时的状态
+   - checkpoint_final.json: 完成时的最终状态
 
 7️⃣ 故障排除
 ─────────────────────────────────────────────────────────────────────────────
