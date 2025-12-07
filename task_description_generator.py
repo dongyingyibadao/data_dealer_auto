@@ -679,16 +679,30 @@ class TaskDescriptionGenerator:
         
         # 清理completed_ranges中的Tensor对象，只保留可序列化的数据
         cleaned_ranges = []
-        for range_item in completed_ranges:
+        for idx, range_item in enumerate(completed_ranges):
             cleaned_item = {}
             for key, value in range_item.items():
-                # 跳过Tensor和numpy数组（图像数据）
-                if isinstance(value, (torch.Tensor, np.ndarray)):
+                # 转换Tensor和numpy数组为Python原生类型
+                if isinstance(value, torch.Tensor):
+                    # 将Tensor转换为Python类型
+                    if value.numel() == 1:
+                        cleaned_item[key] = value.item()  # 标量Tensor转为int/float
+                    else:
+                        # 多元素Tensor跳过（这是图像数据）
+                        continue
+                elif isinstance(value, np.ndarray):
+                    # numpy数组转换或跳过
+                    if value.size == 1:
+                        cleaned_item[key] = value.item()
+                    else:
+                        continue
+                # 跳过图像数据相关的键（但保留frame_start, frame_end等重要字段）
+                elif any(img_key in key.lower() for img_key in ['_frame_cam', 'image']):
                     continue
-                # 跳过包含image的键（可能是图像数据）
-                if 'image' in key.lower() or 'frame' in key.lower():
-                    continue
-                cleaned_item[key] = value
+                else:
+                    # 保留其他所有字段
+                    cleaned_item[key] = value
+            
             cleaned_ranges.append(cleaned_item)
         
         checkpoint_data = {
