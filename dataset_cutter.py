@@ -264,6 +264,17 @@ class DatasetCutter:
         episodes_list = []
         global_frame_idx = 0
         
+        # 首先收集所有唯一的任务描述，构建任务索引映射
+        task_to_index = {}
+        for cut_range_id, episode_data in sorted(episodes_data.items()):
+            task_desc = episode_data['metadata']['new_task']
+            if task_desc not in task_to_index:
+                task_to_index[task_desc] = len(task_to_index)
+        
+        print(f"\n  任务映射表:")
+        for task, idx in sorted(task_to_index.items(), key=lambda x: x[1]):
+            print(f"    {idx}: {task}")
+        
         # 保存帧数据
         print(f"\n  保存帧数据...")
         file_idx = 0
@@ -289,6 +300,9 @@ class DatasetCutter:
             episode_meta = {
                 'episode_index': new_episode_idx,
                 'tasks': np.array([metadata['new_task']]),
+                # LeRobot required: data file location
+                'data/chunk_index': to_int(metadata['episode_index']),  # 使用原始episode作为chunk
+                'data/file_index': new_episode_idx,  # 使用新episode index作为file index
                 'dataset_from_index': global_frame_idx,
                 'dataset_to_index': global_frame_idx + num_frames - 1,
                 'length': num_frames,
@@ -304,6 +318,10 @@ class DatasetCutter:
             episodes_list.append(episode_meta)
             global_frame_idx += num_frames
             
+            # 获取当前episode的task_index
+            current_task = metadata['new_task']
+            current_task_index = task_to_index[current_task]
+            
             # 准备帧数据
             frame_records = []
             for local_idx, frame in enumerate(frames):
@@ -313,6 +331,11 @@ class DatasetCutter:
                     'observation.state': frame['observation.state'],
                     'action': frame['action'],
                     'timestamp': frame.get('timestamp', torch.tensor(0.0)),
+                    # 添加必需的元数据字段 - 强制使用新的索引值
+                    'episode_index': torch.tensor(new_episode_idx),  # 使用新episode索引
+                    'frame_index': torch.tensor(local_idx),  # 使用局部帧索引
+                    'index': torch.tensor(global_frame_idx - num_frames + local_idx),  # 全局索引
+                    'task_index': torch.tensor(current_task_index),  # 使用正确的任务索引
                 }
                 frame_records.append(record)
             
@@ -343,27 +366,26 @@ class DatasetCutter:
         print(f"    - Episodes数: {len(episodes_df)}")
         print(f"    - 总帧数: {global_frame_idx}")
         
-        # 保存tasks列表 - 提取唯一的任务描述
-        unique_tasks = set()
-        for task_array in episodes_df['tasks']:
-            task_str = task_array[0] if isinstance(task_array, np.ndarray) else task_array
-            unique_tasks.add(task_str)
-        
+        # 保存tasks列表 - 使用预先构建的任务映射
+        # 注意：任务描述应该作为DataFrame的index（行名），task_index作为列
         tasks_data = []
-        for task_idx, task in enumerate(sorted(unique_tasks)):
-            tasks_data.append({'task_index': task_idx, 'task': task})
+        for task, task_idx in sorted(task_to_index.items(), key=lambda x: x[1]):
+            tasks_data.append({'task': task, 'task_index': task_idx})
         
         tasks_df = pd.DataFrame(tasks_data)
+        # 将任务描述设为index（这是LeRobot期望的格式）
+        tasks_df = tasks_df.set_index('task')
         tasks_file = self.output_dir / 'meta' / 'tasks.parquet'
-        tasks_df.to_parquet(tasks_file, index=False)
+        tasks_df.to_parquet(tasks_file, index=True)  # 确保保存index
         
         print(f"  ✓ 保存tasks列表: {tasks_file}")
         print(f"    - Tasks数: {len(tasks_df)}")
         
         print(f"  ✓ 总共保存 {file_idx} 个数据文件")
         
-        # 保存元信息
-        self._save_metadata(meta_dir, episodes_df, tasks_df)
+        # 保存元信息 - 传递正确的meta根目录
+        root_meta_dir = self.output_dir / 'meta'
+        self._save_metadata(root_meta_dir, episodes_df, tasks_df)
         
         return self.output_dir
     
@@ -411,6 +433,11 @@ class DatasetCutter:
             'observation.state': [to_numpy(f['observation.state']).tolist() for f in frame_records],
             'action': [to_numpy(f['action']).tolist() for f in frame_records],
             'timestamp': [float(to_numpy(f['timestamp'])) for f in frame_records],
+            # 添加元数据字段
+            'episode_index': [int(to_numpy(f['episode_index'])) for f in frame_records],
+            'frame_index': [int(to_numpy(f['frame_index'])) for f in frame_records],
+            'index': [int(to_numpy(f['index'])) for f in frame_records],
+            'task_index': [int(to_numpy(f['task_index'])) for f in frame_records],
         }
         
         # 定义HuggingFace Dataset的Features
@@ -420,6 +447,11 @@ class DatasetCutter:
             'observation.state': Sequence(Value('float32')),
             'action': Sequence(Value('float32')),
             'timestamp': Value('float32'),
+            # 添加元数据字段
+            'episode_index': Value('int64'),
+            'frame_index': Value('int64'),
+            'index': Value('int64'),
+            'task_index': Value('int64'),
         })
         
         # 创建HuggingFace Dataset
@@ -433,16 +465,77 @@ class DatasetCutter:
         """
         保存元信息文件
         """
-        # 保存info.json
+        print(f"  📝 开始保存元信息到 {meta_dir}...")
+        
+        # 保存info.json - 完整的LeRobot格式
         info = {
-            'total_episodes': len(episodes_df),
-            'total_frames': episodes_df['length'].sum(),
-            'total_tasks': len(tasks_df),
-            'created_at': datetime.now().isoformat(),
+            'codebase_version': 'v3.0',
             'robot_type': 'Panda 7-DOF',
-            'observation_keys': ['observation.images.image', 'observation.images.image2', 'observation.state'],
-            'action_keys': ['action'],
-            'sampling_frequency': 10  # Hz
+            'total_episodes': int(len(episodes_df)),
+            'total_frames': int(episodes_df['length'].sum()),
+            'total_tasks': int(len(tasks_df)),
+            'chunks_size': 1000,
+            'fps': 10.0,
+            'splits': {
+                'train': f"0:{len(episodes_df)}"
+            },
+            'data_path': 'data/episode_{chunk_index}/segment_{file_index}.parquet',
+            'features': {
+                'observation.images.image': {
+                    'dtype': 'image',
+                    'shape': [256, 256, 3],
+                    'names': ['height', 'width', 'channel'],
+                    'fps': 10.0
+                },
+                'observation.images.image2': {
+                    'dtype': 'image',
+                    'shape': [256, 256, 3],
+                    'names': ['height', 'width', 'channel'],
+                    'fps': 10.0
+                },
+                'observation.state': {
+                    'dtype': 'float32',
+                    'shape': [8],
+                    'names': ['state'],
+                    'fps': 10.0
+                },
+                'action': {
+                    'dtype': 'float32',
+                    'shape': [7],
+                    'names': ['actions'],
+                    'fps': 10.0
+                },
+                'timestamp': {
+                    'dtype': 'float32',
+                    'shape': [1],
+                    'names': None,
+                    'fps': 10.0
+                },
+                'episode_index': {
+                    'dtype': 'int64',
+                    'shape': [1],
+                    'names': None,
+                    'fps': 10.0
+                },
+                'frame_index': {
+                    'dtype': 'int64',
+                    'shape': [1],
+                    'names': None,
+                    'fps': 10.0
+                },
+                'index': {
+                    'dtype': 'int64',
+                    'shape': [1],
+                    'names': None,
+                    'fps': 10.0
+                },
+                'task_index': {
+                    'dtype': 'int64',
+                    'shape': [1],
+                    'names': None,
+                    'fps': 10.0
+                }
+            }
         }
         
         with open(meta_dir / 'info.json', 'w') as f:

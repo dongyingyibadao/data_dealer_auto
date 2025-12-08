@@ -60,7 +60,7 @@ Pick/Place检测原理
     --llm-api-key 5ffef770a5b148c5920b7b16329e30fa \
     --llm-api-base https://gpt.yunstorm.com/ \
     --llm-api-version 2025-01-01-preview \
-    --llm-model gpt-5 \
+    --llm-model gpt-4o \
     --save-mode image
 
   优势：
