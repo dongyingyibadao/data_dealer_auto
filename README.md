@@ -11,6 +11,7 @@
 - ✂️ **精准裁剪** - 提取操作前后完整序列（可配置帧数）
 - 🤖 **任务生成** - 支持本地规则/Qwen/Azure GPT 生成任务描述  
 - 💾 **格式转换** - 输出 LeRobot v3.0 标准格式，可直接训练
+- 🔶 **占位符支持** - 为 motion_planning 标记同一 episode 内的动作跳跃边界
 - 🛡️ **断点保护** - Checkpoint 机制，支持中断恢复
 - ⚡ **批量处理** - 高效处理大规模数据集
 
@@ -72,6 +73,33 @@ frame = dataset[0]
 print(f"Task: {frame['task']}")
 print(f"Action: {frame['action']}")
 ```
+
+### 使用占位符功能（用于 motion_planning）
+
+```python
+from lerobot_dataset_with_placeholder import LeRobotDatasetWithPlaceholder
+
+# 加载带占位符的数据集
+dataset = LeRobotDatasetWithPlaceholder(
+    repo_id='cut_dataset',
+    root='./cut_dataset',
+    placeholder_action_value=-999.0
+)
+
+print(f"总帧数: {len(dataset)} (包含 {dataset.num_placeholders} 个占位符)")
+
+# 遍历数据，占位符标记动作跳跃边界
+for i in range(len(dataset)):
+    frame = dataset[i]
+    if frame['is_placeholder'].item():
+        print(f"帧 {i}: 🔶 动作跳跃边界")
+        # 重置轨迹缓冲区或其他逻辑
+    else:
+        # 正常处理观测和动作
+        pass
+```
+
+**详细文档**: [LEROBOT_DATASET_PLACEHOLDER_USAGE.md](./docs/LEROBOT_DATASET_PLACEHOLDER_USAGE.md)
 
 ## 📊 输出格式
 
@@ -247,6 +275,14 @@ MIT License
 
 - [LeRobot](https://github.com/huggingface/lerobot) - HuggingFace 机器人学习框架
 - [LIBERO](https://libero-project.github.io/) - 机器人操作基准数据集
+
+## 📚 文档索引
+
+- [QUICK_START.md](./docs/QUICK_START.md) - 快速上手指南
+- [USAGE_GUIDE.md](./docs/USAGE_GUIDE.md) - 详细使用文档
+- [LEROBOT_DATASET_PLACEHOLDER_USAGE.md](./LEROBOT_DATASET_PLACEHOLDER_USAGE.md) - 占位符数据集使用指南
+- [FINAL_FIX_SUMMARY.md](./FINAL_FIX_SUMMARY.md) - LeRobot 格式修复总结
+- [PROMPT_CUSTOMIZATION_GUIDE.md](./PROMPT_CUSTOMIZATION_GUIDE.md) - LLM Prompt 定制指南
 
 ---
 
