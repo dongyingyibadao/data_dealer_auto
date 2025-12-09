@@ -115,7 +115,7 @@ git status
 # 2. 如果有未提交的修改，先保存或提交
 git stash                          # 临时保存修改
 # 或
-git commit -am "保存当前修改"       # 提交修改
+git commit -m "保存当前修改"       # 提交修改
 
 # 3. 拉取最新代码
 git pull origin main

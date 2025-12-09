@@ -79,8 +79,8 @@ class DatasetCutter:
                     # 添加元数据
                     new_item['original_index'] = frame_idx
                     new_item['cut_range_id'] = range_idx
-                    new_item['original_task'] = frame_range['task']
-                    new_item['new_task'] = frame_range.get('new_task', frame_range['task'])
+                    new_item['original_task'] = frame_range.get('original_task', frame_range.get('task', ''))
+                    new_item['new_task'] = frame_range.get('new_task', frame_range.get('original_task', frame_range.get('task', '')))
                     new_item['action_type'] = frame_range['action_type']
                     new_item['keyframe_index'] = frame_range['keyframe_index']
                     
