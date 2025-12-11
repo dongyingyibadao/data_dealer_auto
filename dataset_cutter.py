@@ -20,44 +20,52 @@ class DatasetCutter:
     2. LeRobot模式：保存为Parquet格式（方便训练）
     """
     
-    def __init__(self, output_dir: str = None, save_mode: str = 'lerobot'):
+    def __init__(self, output_dir: str = None, save_mode: str = 'lerobot', batch_size: int = 100):
         """
         初始化数据集裁剪器
         
         Args:
             output_dir: 输出目录
             save_mode: 保存模式 'image' 或 'lerobot' 或 'both'
+            batch_size: 批处理大小（每次处理多少个episode）
         """
         self.output_dir = Path(output_dir) if output_dir else Path('./cut_dataset')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.save_mode = save_mode
+        self.batch_size = batch_size
         self.episodes_data = []
         self.metadata_buffer = []
     
-    def extract_frames(self, 
-                      dataset,
-                      frame_ranges: List[Dict],
-                      verbose: bool = True) -> List[Dict]:
+    def extract_frames_batch(self, 
+                            dataset,
+                            frame_ranges: List[Dict],
+                            batch_start: int = 0,
+                            batch_end: int = None,
+                            verbose: bool = True) -> List[Dict]:
         """
-        从数据集中提取指定范围的帧
+        从数据集中批量提取指定范围的帧（避免一次性加载所有数据）
         
         Args:
             dataset: LeRobot数据集
             frame_ranges: 帧范围列表
+            batch_start: 批次起始索引
+            batch_end: 批次结束索引（None表示到末尾）
             verbose: 是否打印详细信息
             
         Returns:
             提取的数据列表
         """
         extracted_data = []
+        batch_end = batch_end or len(frame_ranges)
         
         if verbose:
-            print(f"📥 开始提取帧数据...")
+            print(f"📥 提取帧数据批次 [{batch_start}:{batch_end}]...")
         
-        for range_idx, frame_range in enumerate(frame_ranges):
-            if verbose and range_idx % 10 == 0:
-                print(f"  处理范围 {range_idx}/{len(frame_ranges)}")
+        for range_idx in range(batch_start, batch_end):
+            if verbose and (range_idx - batch_start) % 10 == 0:
+                print(f"  处理范围 {range_idx}/{batch_end}")
             
+            frame_range = frame_ranges[range_idx]
             start_idx = frame_range['frame_start']
             end_idx = frame_range['frame_end']
             
@@ -65,16 +73,17 @@ class DatasetCutter:
                 try:
                     item = dataset[frame_idx]
                     
-                    # 复制数据项
-                    new_item = copy.deepcopy({k: v for k, v in item.items() 
-                                             if k in ['observation.images.image',
-                                                     'observation.images.image2',
-                                                     'observation.state',
-                                                     'action',
-                                                     'timestamp',
-                                                     'frame_index',
-                                                     'episode_index',
-                                                     'task_index']})
+                    # 只提取需要的字段，不使用 deepcopy（内存优化）
+                    new_item = {
+                        'observation.images.image': item['observation.images.image'].clone().detach() if hasattr(item['observation.images.image'], 'clone') else item['observation.images.image'],
+                        'observation.images.image2': item['observation.images.image2'].clone().detach() if hasattr(item['observation.images.image2'], 'clone') else item['observation.images.image2'],
+                        'observation.state': item['observation.state'].clone().detach() if hasattr(item['observation.state'], 'clone') else item['observation.state'],
+                        'action': item['action'].clone().detach() if hasattr(item['action'], 'clone') else item['action'],
+                        'timestamp': item.get('timestamp', torch.tensor(0.0)),
+                        'frame_index': item.get('frame_index', torch.tensor(0)),
+                        'episode_index': item.get('episode_index', torch.tensor(0)),
+                        'task_index': item.get('task_index', torch.tensor(0)),
+                    }
                     
                     # 添加元数据
                     new_item['original_index'] = frame_idx
@@ -92,7 +101,7 @@ class DatasetCutter:
                     continue
         
         if verbose:
-            print(f"✓ 提取完成，共 {len(extracted_data)} 帧")
+            print(f"✓ 批次提取完成，共 {len(extracted_data)} 帧")
         
         return extracted_data
     
@@ -236,12 +245,169 @@ class DatasetCutter:
         
         return Image.fromarray(tensor_data)
     
+    def save_as_lerobot_format_streaming(self,
+                                        dataset,
+                                        frame_ranges: List[Dict],
+                                        max_episodes: Optional[int] = None) -> Path:
+        """
+        流式保存数据为LeRobot Parquet格式（批处理，节省内存）
+        
+        Args:
+            dataset: 原始LeRobot数据集
+            frame_ranges: 帧范围列表
+            max_episodes: 最多保存的episode数量
+            
+        Returns:
+            保存的文件路径
+        """
+        print(f"💾 流式保存数据为LeRobot Parquet格式...")
+        print(f"  批处理大小: {self.batch_size} episodes/批")
+        
+        # 首先构建任务映射表
+        task_to_index = {}
+        for frame_range in frame_ranges:
+            task_desc = frame_range.get('new_task', frame_range.get('task', ''))
+            if task_desc not in task_to_index:
+                task_to_index[task_desc] = len(task_to_index)
+        
+        print(f"\n  任务映射表:")
+        for task, idx in sorted(task_to_index.items(), key=lambda x: x[1]):
+            print(f"    {idx}: {task}")
+        
+        # 创建输出目录结构
+        meta_dir = self.output_dir / 'meta' / 'episodes' / 'chunk-000'
+        data_root_dir = self.output_dir / 'data'
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        data_root_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 流式处理
+        episodes_list = []
+        global_frame_idx = 0
+        file_idx = 0
+        
+        # 限制episode数量
+        total_ranges = min(len(frame_ranges), max_episodes) if max_episodes else len(frame_ranges)
+        
+        # 分批处理
+        for batch_start in range(0, total_ranges, self.batch_size):
+            batch_end = min(batch_start + self.batch_size, total_ranges)
+            
+            print(f"\n  处理批次 [{batch_start}:{batch_end}]/{total_ranges}")
+            
+            # 提取当前批次的帧数据
+            extracted_data = self.extract_frames_batch(
+                dataset, frame_ranges, batch_start, batch_end, verbose=False
+            )
+            
+            # 按episode组织
+            episodes_data = self.organize_by_episode(extracted_data)
+            
+            # 保存当前批次
+            for cut_range_id, episode_data in sorted(episodes_data.items()):
+                frames = episode_data['frames']
+                metadata = episode_data['metadata']
+                
+                num_frames = len(frames)
+                new_episode_idx = len(episodes_list)
+                
+                # 确保整数值不是Tensor
+                def to_int(val):
+                    if hasattr(val, 'item'):
+                        return int(val.item())
+                    return int(val)
+                
+                episode_meta = {
+                    'episode_index': new_episode_idx,
+                    'tasks': np.array([metadata['new_task']]),
+                    'data/chunk_index': to_int(metadata['episode_index']),
+                    'data/file_index': new_episode_idx,
+                    'dataset_from_index': global_frame_idx,
+                    'dataset_to_index': global_frame_idx + num_frames - 1,
+                    'length': num_frames,
+                    'action_type': metadata['action_type'],
+                    'original_task': metadata['original_task'],
+                    'cut_range_id': metadata['cut_range_id'],
+                    'keyframe_index': to_int(metadata['keyframe_index']),
+                    'original_episode_index': to_int(metadata['episode_index']),
+                    'original_task_index': to_int(metadata['task_index'])
+                }
+                
+                episodes_list.append(episode_meta)
+                global_frame_idx += num_frames
+                
+                # 获取当前episode的task_index
+                current_task = metadata['new_task']
+                current_task_index = task_to_index[current_task]
+                
+                # 准备帧数据
+                frame_records = []
+                for local_idx, frame in enumerate(frames):
+                    record = {
+                        'observation.images.image': frame['observation.images.image'],
+                        'observation.images.image2': frame['observation.images.image2'],
+                        'observation.state': frame['observation.state'],
+                        'action': frame['action'],
+                        'timestamp': frame.get('timestamp', torch.tensor(0.0)),
+                        'episode_index': torch.tensor(new_episode_idx),
+                        'frame_index': torch.tensor(local_idx),
+                        'index': torch.tensor(global_frame_idx - num_frames + local_idx),
+                        'task_index': torch.tensor(current_task_index),
+                    }
+                    frame_records.append(record)
+                
+                # 保存为parquet
+                if frame_records:
+                    original_ep_idx = to_int(metadata['episode_index'])
+                    episode_dir = data_root_dir / f'episode_{original_ep_idx}'
+                    episode_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    data_file = episode_dir / f'segment_{new_episode_idx}.parquet'
+                    self._save_frame_batch(frame_records, data_file)
+                    file_idx += 1
+            
+            # 清理内存
+            del extracted_data
+            del episodes_data
+            import gc
+            gc.collect()
+            
+            print(f"  ✓ 批次完成，已处理 {len(episodes_list)} episodes, {file_idx} 文件")
+        
+        # 保存元数据
+        episodes_df = pd.DataFrame(episodes_list)
+        episodes_file = meta_dir / 'file-000.parquet'
+        episodes_df.to_parquet(episodes_file, index=False)
+        
+        print(f"\n  ✓ 保存episodes元数据: {episodes_file}")
+        print(f"    - Episodes数: {len(episodes_df)}")
+        print(f"    - 总帧数: {global_frame_idx}")
+        
+        # 保存tasks列表
+        tasks_data = []
+        for task, task_idx in sorted(task_to_index.items(), key=lambda x: x[1]):
+            tasks_data.append({'task': task, 'task_index': task_idx})
+        
+        tasks_df = pd.DataFrame(tasks_data)
+        tasks_df = tasks_df.set_index('task')
+        tasks_file = self.output_dir / 'meta' / 'tasks.parquet'
+        tasks_df.to_parquet(tasks_file, index=True)
+        
+        print(f"  ✓ 保存tasks列表: {tasks_file}")
+        print(f"    - Tasks数: {len(tasks_df)}")
+        print(f"  ✓ 总共保存 {file_idx} 个数据文件")
+        
+        # 保存元信息
+        root_meta_dir = self.output_dir / 'meta'
+        self._save_metadata(root_meta_dir, episodes_df, tasks_df)
+        
+        return self.output_dir
+    
     def save_as_lerobot_format(self, 
                              episodes_data: Dict[int, Dict],
                              frame_ranges: List[Dict],
                              max_episodes: Optional[int] = None) -> Path:
         """
-        将数据转换为LeRobot Parquet格式
+        将数据转换为LeRobot Parquet格式（旧版本，保留兼容性）
         
         Args:
             episodes_data: 按episode组织的数据
@@ -561,7 +727,9 @@ def cut_and_convert_dataset(dataset,
                            frame_ranges: List[Dict],
                            output_dir: str,
                            save_mode: str = 'lerobot',
-                           max_episodes: Optional[int] = None) -> Path:
+                           max_episodes: Optional[int] = None,
+                           batch_size: int = 100,
+                           streaming: bool = True) -> Path:
     """
     完整的数据集裁剪和转换流程
     
@@ -571,29 +739,47 @@ def cut_and_convert_dataset(dataset,
         output_dir: 输出目录
         save_mode: 保存模式 'image'（图片）, 'lerobot'（Parquet）, 或 'both'（两者）
         max_episodes: 最多保存的episode数量
+        batch_size: 批处理大小（每次处理多少个episode）
+        streaming: 是否使用流式处理（推荐，节省内存）
         
     Returns:
         输出目录路径
     """
-    cutter = DatasetCutter(output_dir, save_mode=save_mode)
+    cutter = DatasetCutter(output_dir, save_mode=save_mode, batch_size=batch_size)
     
-    # 提取帧
-    extracted_data = cutter.extract_frames(dataset, frame_ranges)
-    
-    # 按episode组织
-    episodes_data = cutter.organize_by_episode(extracted_data)
-    
-    # 根据模式保存
-    if save_mode == 'image':
-        output_path = cutter.save_as_image_format(episodes_data, frame_ranges, max_episodes)
-    elif save_mode == 'lerobot':
-        output_path = cutter.save_as_lerobot_format(episodes_data, frame_ranges, max_episodes)
-    elif save_mode == 'both':
-        print("\n📦 保存两种格式...\n")
-        cutter.save_as_image_format(episodes_data, frame_ranges, max_episodes)
-        output_path = cutter.save_as_lerobot_format(episodes_data, frame_ranges, max_episodes)
+    # 使用流式处理（推荐）
+    if streaming and save_mode in ['lerobot', 'both']:
+        print(f"\n💡 使用流式处理模式（批大小: {batch_size}）")
+        output_path = cutter.save_as_lerobot_format_streaming(dataset, frame_ranges, max_episodes)
+        
+        # 如果需要同时保存图片格式
+        if save_mode == 'both':
+            print("\n📦 额外保存图片格式...\n")
+            # 图片格式也使用批处理
+            for batch_start in range(0, len(frame_ranges), batch_size):
+                batch_end = min(batch_start + batch_size, len(frame_ranges))
+                extracted_data = cutter.extract_frames_batch(dataset, frame_ranges, batch_start, batch_end)
+                episodes_data = cutter.organize_by_episode(extracted_data)
+                cutter.save_as_image_format(episodes_data, frame_ranges[batch_start:batch_end], max_episodes)
+                del extracted_data, episodes_data
+                import gc
+                gc.collect()
     else:
-        raise ValueError(f"Unknown save_mode: {save_mode}. Use 'image', 'lerobot', or 'both'")
+        # 旧方式：一次性加载所有数据（不推荐，但保留兼容性）
+        print(f"\n⚠️  使用传统处理模式（一次性加载所有数据）")
+        extracted_data = cutter.extract_frames_batch(dataset, frame_ranges, 0, len(frame_ranges))
+        episodes_data = cutter.organize_by_episode(extracted_data)
+        
+        if save_mode == 'image':
+            output_path = cutter.save_as_image_format(episodes_data, frame_ranges, max_episodes)
+        elif save_mode == 'lerobot':
+            output_path = cutter.save_as_lerobot_format(episodes_data, frame_ranges, max_episodes)
+        elif save_mode == 'both':
+            print("\n📦 保存两种格式...\n")
+            cutter.save_as_image_format(episodes_data, frame_ranges, max_episodes)
+            output_path = cutter.save_as_lerobot_format(episodes_data, frame_ranges, max_episodes)
+        else:
+            raise ValueError(f"Unknown save_mode: {save_mode}. Use 'image', 'lerobot', or 'both'")
     
     return output_path
 

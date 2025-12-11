@@ -35,10 +35,11 @@ from lerobot_dataset_with_placeholder import LeRobotDatasetWithPlaceholder
 
 # 加载数据集
 dataset = LeRobotDatasetWithPlaceholder(
-    repo_id='cut_dataset',
-    root='./cut_dataset',
+    repo_id='datasets_cut',
+    root='/inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut',
     placeholder_action_value=-999.0  # 占位符的 action 值
 )
+
 
 # 查看数据集信息
 print(f"总帧数: {len(dataset)} (包含占位符)")

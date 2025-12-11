@@ -50,18 +50,31 @@ Pick/Place检测原理
 
 🌟 推荐：使用Azure OpenAI GPT-5获得最佳任务描述质量
 
-如果你有Azure OpenAI企业账号，强烈推荐使用GPT-5：
+如果你有Azure OpenAI企业账号，强烈推荐使用GPT-4o：
   
-  python auto_cut_dataset.py \
-    --end-idx 500 \
+  rm -rf /inspire/hdd/project/robot-decision/laijunxi-CZXS25230141/datasets/HuggingFaceVLA_cus/datasets_cut && time python auto_cut_dataset.py \
+    --dataset-path /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/libero \
+    --output-dir /inspire/hdd/project/robot-decision/laijunxi-CZXS25230141/datasets/HuggingFaceVLA_cus/datasets_cut \
     --before-frames 15 \
     --after-frames 10 \
     --llm-provider gpt \
     --llm-api-key 5ffef770a5b148c5920b7b16329e30fa \
     --llm-api-base https://gpt.yunstorm.com/ \
     --llm-api-version 2025-01-01-preview \
-    --llm-model gpt-4o \
-    --save-mode image
+    --llm-model gpt-4o 2>&1 | tee data_cut.log
+
+  rm -rf /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut && time python auto_cut_dataset.py \
+    --dataset-path /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/libero \
+    --output-dir /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut \
+    --before-frames 15 \
+    --after-frames 10 \
+    --llm-provider gpt \
+    --end-idx 1000 \
+    --llm-api-key 5ffef770a5b148c5920b7b16329e30fa \
+    --batch-size 10 \
+    --llm-api-base https://gpt.yunstorm.com/ \
+    --llm-api-version 2025-01-01-preview \
+    --llm-model gpt-4o 2>&1 | tee data_cut.log
 
   优势：
     ✓ GPT-5视觉理解能力，精准识别操作对象

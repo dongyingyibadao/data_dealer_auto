@@ -247,6 +247,10 @@ def main():
                        help='跳过数据集裁剪，仅生成分析')
     parser.add_argument('--load-ranges', type=str, default=None,
                        help='加载之前保存的帧范围信息')
+    parser.add_argument('--batch-size', type=int, default=100,
+                       help='批处理大小（每次处理多少个episode，默认100）')
+    parser.add_argument('--no-streaming', action='store_true',
+                       help='禁用流式处理（不推荐，会占用大量内存）')
     
     args = parser.parse_args()
     
@@ -309,6 +313,8 @@ def main():
     if not args.skip_cutting:
         print(f"\n💾 开始裁剪和转换数据集...")
         print(f"📦 保存模式: {args.save_mode}")
+        print(f"💡 批处理大小: {args.batch_size}")
+        print(f"💡 流式处理: {'禁用' if args.no_streaming else '启用（推荐）'}")
         
         # 重新加载数据集（如果没有加载的话）
         if args.load_ranges:
@@ -319,7 +325,9 @@ def main():
             frame_ranges,
             str(output_dir),
             save_mode=args.save_mode,
-            max_episodes=args.max_episodes
+            max_episodes=args.max_episodes,
+            batch_size=args.batch_size,
+            streaming=not args.no_streaming
         )
         
         print(f"\n✅ 数据集裁剪和转换完成!")
