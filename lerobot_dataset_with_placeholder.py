@@ -18,12 +18,61 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from collections import defaultdict
 import json
+import copy
 
 try:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 except ImportError:
     print("❌ 请先安装 lerobot: pip install lerobot")
     raise
+
+
+class AdjustedEpisodesWrapper:
+    """
+    Episodes包装器，动态调整dataset_from_index和dataset_to_index
+    """
+    def __init__(self, original_episodes, adjusted_ranges):
+        self._original_episodes = original_episodes
+        self._adjusted_ranges = adjusted_ranges
+    
+    def __len__(self):
+        return len(self._original_episodes)
+    
+    def __getitem__(self, idx):
+        """返回调整后的episode元数据"""
+        original_ep = self._original_episodes[idx]
+        
+        if idx in self._adjusted_ranges:
+            # 创建一个新字典，包含调整后的索引
+            adjusted_ep = dict(original_ep)
+            adjusted_ep['dataset_from_index'] = self._adjusted_ranges[idx]['dataset_from_index']
+            adjusted_ep['dataset_to_index'] = self._adjusted_ranges[idx]['dataset_to_index']
+            return adjusted_ep
+        
+        return original_ep
+    
+    def __iter__(self):
+        """支持迭代"""
+        for idx in range(len(self)):
+            yield self[idx]
+
+
+class AdjustedMetadataWrapper:
+    """
+    Metadata包装器，返回调整后的episodes
+    """
+    def __init__(self, original_meta, adjusted_ranges):
+        self._original_meta = original_meta
+        self._adjusted_episodes = AdjustedEpisodesWrapper(original_meta.episodes, adjusted_ranges)
+    
+    @property
+    def episodes(self):
+        """返回调整后的episodes"""
+        return self._adjusted_episodes
+    
+    def __getattr__(self, name):
+        """其他属性直接从原始meta获取"""
+        return getattr(self._original_meta, name)
 
 
 class LeRobotDatasetWithPlaceholder:
@@ -67,6 +116,9 @@ class LeRobotDatasetWithPlaceholder:
         
         # 构建索引映射（原始索引 -> 新索引，插入占位符后）
         self._build_index_mapping()
+        
+        # 构建调整后的meta信息（方案1：动态更新meta）
+        self._build_adjusted_meta()
         
         print(f"✅ 数据集加载完成")
         print(f"   原始帧数: {len(self.original_dataset)}")
@@ -171,6 +223,50 @@ class LeRobotDatasetWithPlaceholder:
         
         print(f"🗺️  索引映射构建完成: {len(self.new_to_original_idx)} 个新索引")
     
+    def _build_adjusted_meta(self):
+        """
+        构建调整后的meta信息（方案1实现）
+        
+        根据placeholder的插入位置，重新计算所有episode的dataset_from_index和dataset_to_index
+        使meta信息与实际数据索引保持一致
+        """
+        print("📝 构建调整后的meta信息...")
+        
+        # 构建原始索引到新索引的映射表
+        # original_to_new[original_idx] = new_idx
+        self.original_to_new_idx = {}
+        for new_idx, mapping in enumerate(self.new_to_original_idx):
+            if not mapping[1]:  # 不是placeholder
+                original_idx = mapping[0]
+                self.original_to_new_idx[original_idx] = new_idx
+        
+        # 为每个episode存储调整后的索引
+        self._adjusted_episode_ranges = {}
+        episodes_meta = self.original_dataset.meta.episodes
+        
+        for ep_idx in range(len(episodes_meta)):
+            ep_meta = episodes_meta[ep_idx]
+            original_from = ep_meta['dataset_from_index']
+            original_to = ep_meta['dataset_to_index']
+            
+            # 使用映射表直接获取调整后的索引
+            adjusted_from = self.original_to_new_idx.get(original_from, original_from)
+            adjusted_to = self.original_to_new_idx.get(original_to, original_to)
+            
+            # 存储调整后的范围
+            self._adjusted_episode_ranges[ep_idx] = {
+                'dataset_from_index': adjusted_from,
+                'dataset_to_index': adjusted_to,
+                'offset': adjusted_from - original_from
+            }
+            
+            # 调试信息（前5个episode）
+            if ep_idx < 5:
+                offset = adjusted_from - original_from
+                print(f"   Episode {ep_idx}: {original_from:>3}-{original_to:<3} -> {adjusted_from:>3}-{adjusted_to:<3} (偏移+{offset})")
+        
+        print(f"✅ Meta信息更新完成，所有episode的索引已调整")
+    
     def _create_placeholder_frame(self, previous_frame: Dict[str, Any], episode_index: int) -> Dict[str, Any]:
         """
         创建占位符帧
@@ -262,7 +358,17 @@ class LeRobotDatasetWithPlaceholder:
     
     @property
     def meta(self):
-        """返回原始数据集的元数据"""
+        """返回调整后的元数据（包含placeholder偏移）"""
+        if not hasattr(self, '_meta_wrapper'):
+            self._meta_wrapper = AdjustedMetadataWrapper(
+                self.original_dataset.meta,
+                self._adjusted_episode_ranges
+            )
+        return self._meta_wrapper
+    
+    @property
+    def original_meta(self):
+        """返回原始数据集的元数据（未调整）"""
         return self.original_dataset.meta
     
     @property

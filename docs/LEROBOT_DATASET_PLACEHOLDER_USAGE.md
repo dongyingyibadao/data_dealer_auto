@@ -6,8 +6,10 @@
 
 1. **自动插入占位符**：在同一原始 episode 的不同 segment 之间自动插入占位符帧
 2. **跳跃标识**：占位符明确标记动作的跳跃边界，帮助机器人理解非连续动作
-3. **完全兼容**：保持与原始 LeRobotDataset 的接口兼容
-4. **透明访问**：通过标准索引访问，占位符自动处理
+3. **Meta信息自动调整** ✨：`dataset.meta.episodes`中的`dataset_from_index`和`dataset_to_index`自动调整，与实际数据索引完全一致
+4. **完全兼容**：保持与原始 LeRobotDataset 的接口兼容
+5. **透明访问**：通过标准索引访问，占位符自动处理
+6. **零文件修改**：纯内存操作，不修改任何磁盘文件
 
 ## 📋 占位符特性
 
@@ -41,6 +43,12 @@ dataset = LeRobotDatasetWithPlaceholder(
 )
 
 
+dataset = LeRobotDatasetWithPlaceholder(
+    repo_id='HuggingFaceVLA_cus/datasets_cut',
+    root='/inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/datasets_cut',
+    placeholder_action_value=-999.0  # 占位符的 action 值
+)
+
 # 查看数据集信息
 print(f"总帧数: {len(dataset)} (包含占位符)")
 print(f"原始帧数: {len(dataset.original_dataset)}")
@@ -54,6 +62,18 @@ for i in range(len(dataset)):
         print(f"帧 {i}: 🔶 占位符 (episode {frame['episode_index'].item()})")
     else:
         print(f"帧 {i}: 正常帧 (episode {frame['episode_index'].item()})")
+
+# 使用meta信息访问episode（索引已自动调整！）
+for ep_idx in range(len(dataset.meta.episodes)):
+    ep_meta = dataset.meta.episodes[ep_idx]
+    from_idx = ep_meta['dataset_from_index']
+    to_idx = ep_meta['dataset_to_index']
+    
+    # 直接使用meta中的索引 - 已考虑placeholder偏移
+    first_frame = dataset[from_idx]
+    last_frame = dataset[to_idx]
+    
+    print(f"Episode {ep_idx}: 范围 {from_idx}-{to_idx}, 任务: {ep_meta['tasks']}")
 ```
 
 ### 查看数据集结构
@@ -77,6 +97,48 @@ print(f"Placeholders: {info['num_placeholders']}")
 # 验证占位符是否正确插入
 dataset.verify_placeholders(num_samples=5)
 ```
+
+### 使用Meta信息（重要！）✨
+
+**新特性**：`dataset.meta.episodes`中的索引已自动调整，可以直接使用！
+
+```python
+# Meta信息已自动调整，考虑了placeholder的偏移
+ep_meta = dataset.meta.episodes[1]
+from_idx = ep_meta['dataset_from_index']  # 已调整的索引
+to_idx = ep_meta['dataset_to_index']      # 已调整的索引
+
+# 直接使用，完全正确！
+first_frame = dataset[from_idx]
+last_frame = dataset[to_idx]
+
+assert first_frame['episode_index'].item() == ep_meta['episode_index']
+assert last_frame['episode_index'].item() == ep_meta['episode_index']
+
+print(f"Episode {ep_meta['episode_index']}: 索引范围 {from_idx}-{to_idx}")
+print(f"任务: {ep_meta['tasks']}")
+```
+
+如果需要访问原始的未调整meta：
+
+```python
+# 获取原始meta（未考虑placeholder偏移）
+original_ep = dataset.original_meta.episodes[1]
+original_from = original_ep['dataset_from_index']
+original_to = original_ep['dataset_to_index']
+
+# 比较
+adjusted_ep = dataset.meta.episodes[1]
+print(f"原始范围: {original_from}-{original_to}")
+print(f"调整后: {adjusted_ep['dataset_from_index']}-{adjusted_ep['dataset_to_index']}")
+print(f"偏移: +{adjusted_ep['dataset_from_index'] - original_from}")
+```
+
+**重要说明**：
+- ✅ `dataset.meta`：返回调整后的meta（推荐使用）
+- ✅ `dataset.original_meta`：返回原始meta（如需对比）
+- ✅ 所有调整都在内存中完成，**不会修改磁盘文件**
+- ✅ 完全透明，无需手动计算偏移量
 
 ## 📊 数据结构说明
 
@@ -255,6 +317,31 @@ dataset = LeRobotDatasetWithPlaceholder(
 original_frame = dataset.original_dataset[100]  # 原始索引
 ```
 
+### Q6: Meta信息的索引会自动调整吗？✨
+
+**A**: 是的！从版本1.1开始，`dataset.meta.episodes`中的`dataset_from_index`和`dataset_to_index`会自动调整以考虑placeholder的偏移。你可以直接使用这些索引，无需手动计算：
+
+```python
+ep_meta = dataset.meta.episodes[1]
+from_idx = ep_meta['dataset_from_index']  # 已自动调整
+
+# 直接使用，完全正确
+frame = dataset[from_idx]
+```
+
+如果需要原始的未调整索引，使用`dataset.original_meta`。
+
+### Q7: 会修改原始的meta文件吗？
+
+**A**: **不会！**所有meta调整都是纯内存操作：
+- ❌ 不修改 `meta/info.json`
+- ❌ 不修改 `meta/stats.json`
+- ❌ 不修改 `meta/episodes/` 下的任何文件
+- ✅ 只在内存中创建包装器，动态返回调整后的值
+- ✅ 程序结束后，所有调整消失（因为只在内存中）
+
+原始数据集文件完全安全，不会被修改。每次重新加载时，都会从原始文件读取。
+
 ## 📝 技术细节
 
 ### chunk_index vs episode_index
@@ -280,6 +367,44 @@ new_to_original_idx = [
     ...
 ]
 ```
+
+### Meta信息动态调整机制✨
+
+为了保持meta信息与实际数据索引一致，使用了**包装器模式**：
+
+```python
+class AdjustedEpisodesWrapper:
+    """动态调整episode的dataset_from_index和dataset_to_index"""
+    
+    def __getitem__(self, idx):
+        original_ep = self._original_episodes[idx]
+        adjusted_ep = dict(original_ep)  # 创建副本，不修改原始数据
+        
+        # 应用索引偏移
+        adjusted_ep['dataset_from_index'] = self._adjusted_ranges[idx]['dataset_from_index']
+        adjusted_ep['dataset_to_index'] = self._adjusted_ranges[idx]['dataset_to_index']
+        
+        return adjusted_ep
+
+class AdjustedMetadataWrapper:
+    """包装原始meta，返回调整后的episodes"""
+    
+    @property
+    def episodes(self):
+        return self._adjusted_episodes  # 返回包装器
+```
+
+**工作流程**：
+1. 加载数据集时，构建原始索引到新索引的映射表
+2. 为每个episode计算调整后的`dataset_from_index`和`dataset_to_index`
+3. 创建包装器对象，在访问时动态返回调整后的值
+4. 原始meta文件保持不变（纯内存操作）
+
+**优势**：
+- ✅ 完全透明，使用方式与原始LeRobotDataset相同
+- ✅ 自动调整，无需手动计算偏移
+- ✅ 零文件修改，原始数据安全
+- ✅ 惰性计算，不浪费内存
 
 ## 🤝 与其他系统集成
 
@@ -374,6 +499,22 @@ dataset = LeRobotDatasetWithPlaceholder(
 
 ---
 
-**版本**: 1.0.0  
+## 📚 更新日志
+
+### v1.1.0 (2024-12-13) ✨
+- ✅ 新增：Meta信息自动调整功能
+- ✅ 新增：`dataset.meta.episodes`中的索引自动考虑placeholder偏移
+- ✅ 新增：`dataset.original_meta`属性访问原始meta
+- ✅ 改进：完全透明的使用体验，无需手动计算偏移
+- ✅ 保证：纯内存操作，不修改任何磁盘文件
+
+### v1.0.0 (2024-12-09)
+- ✅ 初始版本：自动插入placeholder功能
+- ✅ Episode结构分析和可视化
+- ✅ Placeholder验证工具
+
+---
+
+**版本**: 1.1.0  
 **作者**: GitHub Copilot AI Assistant  
-**日期**: 2024-12-09
+**最后更新**: 2024-12-13
