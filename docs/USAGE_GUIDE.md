@@ -76,6 +76,13 @@ Pick/Place检测原理
     --llm-api-version 2025-01-01-preview \
     --llm-model gpt-4o 2>&1 | tee data_cut.log
 
+  rm -rf /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut_placeholder && time python auto_cut_dataset.py \
+    --dataset-path /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/libero \
+    --output-dir /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut_placeholder \
+    --load-ranges /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut/frame_ranges_info.json \
+    --batch-size 10 \
+    --insert-placeholders 
+
   优势：
     ✓ GPT-5视觉理解能力，精准识别操作对象
     ✓ 分析多帧图像（首帧、关键帧、尾帧）
@@ -229,6 +236,26 @@ python auto_cut_dataset.py [OPTIONS]
   说明：加载之前保存的分析结果
   用途：避免重复分析，直接进行数据转换
   示例：--load-ranges ./cut_dataset/frame_ranges_info.json
+  注意：可以与--insert-placeholders同时使用
+
+--insert-placeholders
+  说明：在同一chunk的不同segments之间物理插入placeholder（方案3）
+  类型：布尔标志（无参数）
+  用途：生成包含placeholder的数据集，placeholder永久存在于磁盘
+  特点：
+    - Placeholder物理写入磁盘
+    - Meta信息自动包含正确的索引
+    - 可与--load-ranges配合使用
+    - 适合数据集分发和归档
+  示例：--insert-placeholders
+  详见：docs/PLACEHOLDER_GENERATION_GUIDE.md
+
+--placeholder-action-value VALUE
+  说明：placeholder的action值
+  默认：-999.0
+  用途：自定义placeholder的识别值
+  示例：--placeholder-action-value -1000.0
+  注意：需要与--insert-placeholders一起使用
 
 4️⃣ 使用案例
 ─────────────────────────────────────────────────────────────────────────────
@@ -347,6 +374,27 @@ python auto_cut_dataset.py [OPTIONS]
   优点：避免重复分析，节省时间
   用途：调整episode数量或其他参数
 
+📌 案例7b：使用已有分析结果 + 插入Placeholder（方案3）⚡
+  
+  # 第一次运行（仅分析并保存）
+  python auto_cut_dataset.py --end-idx 10000 --skip-cutting
+  
+  # 第二次运行（加载分析结果 + 物理插入placeholder）
+  python auto_cut_dataset.py \
+    --load-ranges cut_dataset/frame_ranges_info.json \
+    --max-episodes 200 \
+    --insert-placeholders \
+    --placeholder-action-value -999.0
+  
+  优点：
+    ✓ 跳过分析和LLM步骤，直接转换
+    ✓ 在转换时插入物理placeholder
+    ✓ 可以对同一分析结果生成不同版本（有/无placeholder）
+  用途：
+    - 快速生成多个数据集版本
+    - 测试placeholder对训练的影响
+    - 数据集发布前的最终处理
+
 📌 案例8：指定输出目录
   
   python auto_cut_dataset.py \
@@ -356,6 +404,36 @@ python auto_cut_dataset.py [OPTIONS]
   
   输出到：/data/my_dataset/
   用途：组织多个数据集或使用外部存储
+
+📌 案例8b：生成带Placeholder的数据集（方案3 - 物理写入）⚡
+  
+  # 直接生成带placeholder的数据集
+  python auto_cut_dataset.py \
+    --dataset-path /path/to/dataset \
+    --output-dir /data/dataset_with_ph \
+    --end-idx 10000 \
+    --max-episodes 100 \
+    --insert-placeholders \
+    --placeholder-action-value -999.0
+  
+  # 或使用已有的分析结果
+  python auto_cut_dataset.py \
+    --load-ranges cut_dataset/frame_ranges_info.json \
+    --output-dir /data/dataset_with_ph \
+    --insert-placeholders
+  
+  Placeholder特性：
+    ✓ 在同一chunk的不同segments之间物理插入
+    ✓ Action值全为-999.0（可自定义）
+    ✓ Meta信息自动包含正确的索引
+    ✓ 可用标准LeRobotDataset直接加载
+  
+  用途：
+    - 数据集分发和归档
+    - 训练时需要明确的轨迹分割标记
+    - 与方案1（运行时动态）对比实验
+  
+  详见：docs/LOAD_RANGES_GUIDE.md（Placeholder章节）
 
 📌 案例9：大数据集处理 + Checkpoint保护（推荐）🛡️
   
@@ -566,6 +644,46 @@ A: 默认位置：./cut_dataset/checkpoints/
    - checkpoint_progress_*.json: 定期保存的进度
    - checkpoint_error_*.json: 错误时的状态
    - checkpoint_final.json: 完成时的最终状态
+
+Q: 什么是Placeholder？何时使用？
+A: Placeholder是在同一chunk的不同segments之间插入的特殊标记帧：
+   
+   两种方案：
+   1. 方案1（运行时动态）：使用LeRobotDatasetWithPlaceholder包装器
+      - 不修改原始数据
+      - 适合训练使用
+      - 详见：docs/LEROBOT_DATASET_PLACEHOLDER_USAGE.md
+   
+   2. 方案3（生成时物理写入）：使用--insert-placeholders参数
+      - 物理写入磁盘
+      - Meta信息自动正确
+      - 适合数据集分发
+      - 详见：docs/LOAD_RANGES_GUIDE.md
+   
+   使用场景：
+   - 标记轨迹的不连续边界
+   - 训练时分割子轨迹
+   - 避免模型学习非连续动作
+
+Q: 如何生成带Placeholder的数据集？
+A: 使用方案3（物理写入）：
+   python auto_cut_dataset.py \
+     --insert-placeholders \
+     --placeholder-action-value -999.0 \
+     [其他参数...]
+   
+   可与--load-ranges配合使用：
+   python auto_cut_dataset.py \
+     --load-ranges cut_dataset/frame_ranges_info.json \
+     --insert-placeholders
+
+Q: 训练时如何处理Placeholder？
+A: 三种方式：
+   1. 通过meta过滤：检查is_placeholder字段
+   2. 通过action值：检测action是否全为-999.0
+   3. 使用collate_fn：在DataLoader中过滤
+   
+   详细代码见：docs/LOAD_RANGES_GUIDE.md
 
 7️⃣ 故障排除
 ─────────────────────────────────────────────────────────────────────────────

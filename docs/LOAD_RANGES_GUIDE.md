@@ -113,6 +113,48 @@ python auto_cut_dataset.py \
 - ✅ 更好地利用硬件资源
 - ✅ 分析结果可以备份和共享
 
+### 场晨5：生成带Placeholder的数据集（方案3）⚡
+
+使用相同的分析结果，生成不同版本的数据集：
+
+```bash
+# 第一步：分析一次（可能包含LLM，耗时）
+python auto_cut_dataset.py \
+    --dataset-path /path/to/dataset \
+    --end-idx 10000 \
+    --llm-provider gpt \
+    --llm-api-key YOUR_KEY \
+    --skip-cutting
+
+# 第二步a：生成不带placeholder的版本
+python auto_cut_dataset.py \
+    --dataset-path /path/to/dataset \
+    --load-ranges cut_dataset/frame_ranges_info.json \
+    --output-dir ./dataset_no_placeholder \
+    --max-episodes 200
+
+# 第二步b：生成带placeholder的版本（物理写入）
+python auto_cut_dataset.py \
+    --dataset-path /path/to/dataset \
+    --load-ranges cut_dataset/frame_ranges_info.json \
+    --output-dir ./dataset_with_placeholder \
+    --max-episodes 200 \
+    --insert-placeholders \
+    --placeholder-action-value -999.0
+```
+
+**优势**：
+- ✅ LLM分析只做一次，节省成本
+- ✅ 快速生成多个数据集版本
+- ✅ 便于对比实验（有/无placeholder）
+- ✅ Placeholder物理写入磁盘，meta信息自动正确
+
+**Placeholder特性**：
+- 在同一chunk的不同segments之间插入
+- Action值全为-999.0（可自定义）
+- Meta中包含`is_placeholder: true`标记
+- 适合数据集分发和归档
+
 ## 📄 frame_ranges_info.json 文件格式
 
 ### 完整结构
@@ -292,6 +334,35 @@ python auto_cut_dataset.py \
     --output-dir /fast/storage/dataset
 ```
 
+### 示例5：使用已有分析结果生成带Placeholder的数据集
+
+```bash
+# 假设已有 frame_ranges_info.json
+
+# 生成不带placeholder的普通版本
+python auto_cut_dataset.py \
+    --dataset-path /data/robot_dataset \
+    --load-ranges cut_dataset/frame_ranges_info.json \
+    --output-dir ./dataset_standard \
+    --max-episodes 100
+
+# 生成带placeholder的版本（物理写入磁盘）
+python auto_cut_dataset.py \
+    --dataset-path /data/robot_dataset \
+    --load-ranges cut_dataset/frame_ranges_info.json \
+    --output-dir ./dataset_with_placeholders \
+    --max-episodes 100 \
+    --insert-placeholders \
+    --placeholder-action-value -999.0
+```
+
+**Placeholder说明**：
+- `--insert-placeholders`: 启用placeholder物理写入（方案3）
+- `--placeholder-action-value`: 设置placeholder的action值（默认-999.0）
+- Placeholder会在同一chunk的不同segments之间插入
+- 生成的meta信息自动包含正确的索引
+- 适用于数据集分发和长期存储
+
 ## ✏️ 手动编辑 JSON
 
 ### 删除不需要的操作
@@ -418,6 +489,8 @@ if max_index > len(dataset):
 | `--llm-provider` | ✅ | 可以重新生成任务描述 |
 | `--output-dir` | ✅ | 指定输出位置 |
 | `--batch-size` | ✅ | 控制内存使用 |
+| `--insert-placeholders` | ✅ | 物理插入placeholder（方案3） |
+| `--placeholder-action-value` | ✅ | 设置placeholder的action值 |
 
 ## 🔍 故障排除
 
@@ -510,9 +583,82 @@ IndexError: index 100000 is out of bounds for axis 0 with size 50000
    mv cut_dataset/frame_ranges_info.json frame_ranges_60frames.json
    ```
 
+## � Placeholder 功能详解
+
+### 什么是Placeholder？
+
+Placeholder是在同一原始chunk的不同segments之间插入的特殊帧，用于标记轨迹的不连续性。
+
+**两种方案**：
+
+1. **方案1：运行时动态生成**
+   - 使用`LeRobotDatasetWithPlaceholder`包装器
+   - Placeholder在内存中动态生成
+   - 不修改原始数据集文件
+   - 适用场景：训练时使用
+   - 详见：[LEROBOT_DATASET_PLACEHOLDER_USAGE.md](./LEROBOT_DATASET_PLACEHOLDER_USAGE.md)
+
+2. **方案3：生成时物理写入**
+   - 使用`--insert-placeholders`参数
+   - Placeholder物理写入磁盘
+   - Meta信息自动正确
+   - 适用场景：数据集分发和归档
+
+### Placeholder的特征
+
+- `action`: 全为`-999.0`（可自定义）
+- `observation`: 复制前一帧的数据
+- `frame_index`: `-1`（特殊标记）
+- Meta中包含`is_placeholder: true`标记
+- 文件名包含`_placeholder`后缀
+
+### 使用示例
+
+```bash
+# 生成带placeholder的数据集
+python auto_cut_dataset.py \
+    --load-ranges cut_dataset/frame_ranges_info.json \
+    --insert-placeholders \
+    --placeholder-action-value -999.0 \
+    --output-dir ./dataset_with_ph
+
+# 加载和使用
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+dataset = LeRobotDataset(
+    repo_id="dataset_with_ph",
+    root="./dataset_with_ph"
+)
+
+# 检测placeholder
+for ep_idx in range(len(dataset.meta.episodes)):
+    ep_meta = dataset.meta.episodes[ep_idx]
+    if ep_meta.get('is_placeholder', False):
+        print(f"Placeholder @ episode {ep_idx}")
+```
+
+### 训练时过滤Placeholder
+
+```python
+# 方法1：通过meta过滤
+for ep_idx in range(len(dataset.meta.episodes)):
+    ep_meta = dataset.meta.episodes[ep_idx]
+    if ep_meta.get('is_placeholder', False):
+        continue  # 跳过placeholder
+    # 正常处理...
+
+# 方法2：通过action值过滤
+for idx in range(len(dataset)):
+    frame = dataset[idx]
+    if torch.all(frame['action'] == -999.0):
+        continue  # 跳过placeholder
+    # 正常处理...
+```
+
 ## 📚 相关文档
 
 - [USAGE_GUIDE.md](./USAGE_GUIDE.md) - 完整使用指南
+- [LEROBOT_DATASET_PLACEHOLDER_USAGE.md](./LEROBOT_DATASET_PLACEHOLDER_USAGE.md) - Placeholder详细指南
 - [CHECKPOINT_GUIDE.md](./CHECKPOINT_GUIDE.md) - 断点续传指南
 - [PROMPT_CUSTOMIZATION_GUIDE.md](./PROMPT_CUSTOMIZATION_GUIDE.md) - 任务描述定制
 

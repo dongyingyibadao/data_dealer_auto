@@ -20,7 +20,8 @@ class DatasetCutter:
     2. LeRobot模式：保存为Parquet格式（方便训练）
     """
     
-    def __init__(self, output_dir: str = None, save_mode: str = 'lerobot', batch_size: int = 100):
+    def __init__(self, output_dir: str = None, save_mode: str = 'lerobot', batch_size: int = 100,
+                 insert_placeholders: bool = False, placeholder_action_value: float = -999.0):
         """
         初始化数据集裁剪器
         
@@ -28,11 +29,15 @@ class DatasetCutter:
             output_dir: 输出目录
             save_mode: 保存模式 'image' 或 'lerobot' 或 'both'
             batch_size: 批处理大小（每次处理多少个episode）
+            insert_placeholders: 是否在同一chunk的不同segments之间物理插入placeholder（方案3）
+            placeholder_action_value: placeholder的action值（默认-999.0）
         """
         self.output_dir = Path(output_dir) if output_dir else Path('./cut_dataset')
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.save_mode = save_mode
         self.batch_size = batch_size
+        self.insert_placeholders = insert_placeholders
+        self.placeholder_action_value = placeholder_action_value
         self.episodes_data = []
         self.metadata_buffer = []
     
@@ -224,6 +229,41 @@ class DatasetCutter:
         
         return self.output_dir
     
+    def _create_placeholder_frame(self, previous_frame: Dict, episode_index: int, 
+                                  global_frame_idx: int, task_index: int) -> Dict:
+        """
+        创建一个placeholder帧（方案3：物理写入）
+        
+        Args:
+            previous_frame: 前一帧的数据（用于复制observation）
+            episode_index: 当前episode索引
+            global_frame_idx: 全局帧索引
+            task_index: 任务索引
+            
+        Returns:
+            placeholder帧数据
+        """
+        # 复制observation（图像和状态）
+        placeholder = {
+            'observation.images.image': previous_frame['observation.images.image'].clone(),
+            'observation.images.image2': previous_frame['observation.images.image2'].clone(),
+            'observation.state': previous_frame['observation.state'].clone(),
+        }
+        
+        # 设置特殊的action值（全为placeholder_action_value）
+        action_shape = previous_frame['action'].shape
+        placeholder['action'] = torch.full(action_shape, self.placeholder_action_value, 
+                                          dtype=previous_frame['action'].dtype)
+        
+        # 设置元数据
+        placeholder['timestamp'] = previous_frame.get('timestamp', torch.tensor(0.0))
+        placeholder['episode_index'] = torch.tensor(episode_index)
+        placeholder['frame_index'] = torch.tensor(-1)  # 特殊标记
+        placeholder['index'] = torch.tensor(global_frame_idx)
+        placeholder['task_index'] = torch.tensor(task_index)
+        
+        return placeholder
+    
     @staticmethod
     def _tensor_to_image(tensor_data):
         """将Tensor转换为PIL Image"""
@@ -355,7 +395,31 @@ class DatasetCutter:
                     }
                     frame_records.append(record)
                 
-                # 保存为parquet
+                # 插入placeholder（如果启用且不是最后一个episode）
+                placeholder_added = False
+                if self.insert_placeholders and new_episode_idx < total_ranges - 1:
+                    # 检查下一个episode是否属于同一个chunk
+                    next_idx = cut_range_id + 1
+                    if next_idx < len(frame_ranges):
+                        next_metadata = frame_ranges[next_idx]
+                        if next_metadata.get('episode_index', -1) == metadata['episode_index']:
+                            # 同一个chunk，将placeholder追加到当前segment
+                            placeholder_frame_dict = self._create_placeholder_frame(
+                                frames[-1],  # 使用当前segment的最后一帧
+                                new_episode_idx,
+                                global_frame_idx,  # placeholder使用下一个frame的index
+                                current_task_index
+                            )
+                            
+                            # 将placeholder作为额外帧追加到frame_records
+                            frame_records.append(placeholder_frame_dict)
+                            global_frame_idx += 1  # placeholder占用一个frame
+                            placeholder_added = True
+                            
+                            if new_episode_idx < 3:  # 只打印前几个
+                                print(f"  ⚡ 插入placeholder @ 索引 {global_frame_idx-1} (追加到 segment {new_episode_idx})")
+                
+                # 保存为parquet（包含可能的placeholder帧）
                 if frame_records:
                     original_ep_idx = to_int(metadata['episode_index'])
                     episode_dir = data_root_dir / f'episode_{original_ep_idx}'
@@ -364,6 +428,11 @@ class DatasetCutter:
                     data_file = episode_dir / f'segment_{new_episode_idx}.parquet'
                     self._save_frame_batch(frame_records, data_file)
                     file_idx += 1
+                
+                # 调整episode metadata以包含placeholder
+                if placeholder_added:
+                    episode_meta['length'] += 1  # 增加1帧（placeholder）
+                    episode_meta['dataset_to_index'] += 1  # 结束索引后移
             
             # 清理内存
             del extracted_data
@@ -729,7 +798,9 @@ def cut_and_convert_dataset(dataset,
                            save_mode: str = 'lerobot',
                            max_episodes: Optional[int] = None,
                            batch_size: int = 100,
-                           streaming: bool = True) -> Path:
+                           streaming: bool = True,
+                           insert_placeholders: bool = False,
+                           placeholder_action_value: float = -999.0) -> Path:
     """
     完整的数据集裁剪和转换流程
     
@@ -741,11 +812,15 @@ def cut_and_convert_dataset(dataset,
         max_episodes: 最多保存的episode数量
         batch_size: 批处理大小（每次处理多少个episode）
         streaming: 是否使用流式处理（推荐，节省内存）
+        insert_placeholders: 是否在同一chunk的不同segments之间物理插入placeholder（方案3）
+        placeholder_action_value: placeholder的action值（默认-999.0）
         
     Returns:
         输出目录路径
     """
-    cutter = DatasetCutter(output_dir, save_mode=save_mode, batch_size=batch_size)
+    cutter = DatasetCutter(output_dir, save_mode=save_mode, batch_size=batch_size,
+                          insert_placeholders=insert_placeholders,
+                          placeholder_action_value=placeholder_action_value)
     
     # 使用流式处理（推荐）
     if streaming and save_mode in ['lerobot', 'both']:

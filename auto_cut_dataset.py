@@ -251,6 +251,10 @@ def main():
                        help='批处理大小（每次处理多少个episode，默认100）')
     parser.add_argument('--no-streaming', action='store_true',
                        help='禁用流式处理（不推荐，会占用大量内存）')
+    parser.add_argument('--insert-placeholders', action='store_true',
+                       help='在同一chunk的不同segments之间物理插入placeholder（方案3）')
+    parser.add_argument('--placeholder-action-value', type=float, default=-999.0,
+                       help='placeholder的action值（默认-999.0）')
     
     args = parser.parse_args()
     
@@ -327,7 +331,9 @@ def main():
             save_mode=args.save_mode,
             max_episodes=args.max_episodes,
             batch_size=args.batch_size,
-            streaming=not args.no_streaming
+            streaming=not args.no_streaming,
+            insert_placeholders=args.insert_placeholders,
+            placeholder_action_value=args.placeholder_action_value
         )
         
         print(f"\n✅ 数据集裁剪和转换完成!")
