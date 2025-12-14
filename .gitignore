@@ -32,6 +32,9 @@ cut_dataset/
 # Test outputs
 /tmp/
 test_output/
+test_output_*/
+datasets_cut/
+datasets_cut_*/
 
 # OS
 .DS_Store

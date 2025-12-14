@@ -11,6 +11,8 @@ from datetime import datetime
 import copy
 from PIL import Image
 import io
+import shutil
+import os
 
 
 class DatasetCutter:
@@ -21,7 +23,9 @@ class DatasetCutter:
     """
     
     def __init__(self, output_dir: str = None, save_mode: str = 'lerobot', batch_size: int = 100,
-                 insert_placeholders: bool = False, placeholder_action_value: float = -999.0):
+                 insert_placeholders: bool = False, placeholder_action_value: float = -999.0,
+                 repo_id: str = None, robot_type: str = "panda", fps: float = 10.0,
+                 use_official_api: bool = True):
         """
         初始化数据集裁剪器
         
@@ -31,6 +35,10 @@ class DatasetCutter:
             batch_size: 批处理大小（每次处理多少个episode）
             insert_placeholders: 是否在同一chunk的不同segments之间物理插入placeholder（方案3）
             placeholder_action_value: placeholder的action值（默认-999.0）
+            repo_id: HuggingFace repo ID（用于官方API）
+            robot_type: 机器人类型（默认"panda"）
+            fps: 采样频率（默认10.0）
+            use_official_api: 是否使用LeRobot官方API（推荐）
         """
         self.output_dir = Path(output_dir) if output_dir else Path('./cut_dataset')
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -38,8 +46,103 @@ class DatasetCutter:
         self.batch_size = batch_size
         self.insert_placeholders = insert_placeholders
         self.placeholder_action_value = placeholder_action_value
+        self.use_official_api = use_official_api
+        self.robot_type = robot_type
+        self.fps = fps
         self.episodes_data = []
         self.metadata_buffer = []
+        
+        # 如果使用官方API，初始化LeRobotDataset
+        self.lerobot_dataset = None
+        if self.use_official_api and save_mode in ['lerobot', 'both']:
+            # 清理已存在的数据集
+            if repo_id is None:
+                repo_id = f"custom/{self.output_dir.name}"
+            self.repo_id = repo_id
+            
+            # 自动设置HF_LEROBOT_HOME为output_dir
+            lerobot_home = self.output_dir.absolute()
+            final_path = lerobot_home / repo_id
+            print(f"  📍 设置数据保存路径: {final_path}/")
+            
+            # 使用官方API创建数据集
+            try:
+                # 方案：先导入模块，然后修改其中的HF_LEROBOT_HOME变量
+                import lerobot.datasets.lerobot_dataset as lrd
+                # 修改模块级别的变量
+                lrd.HF_LEROBOT_HOME = lerobot_home
+                # 保存到实例变量
+                self._custom_lerobot_home = lerobot_home
+                
+                from lerobot.datasets.lerobot_dataset import LeRobotDataset
+                
+                # 清理已有数据集
+                dataset_path = lerobot_home / repo_id
+                if dataset_path.exists():
+                    print(f"  ⚠️  清理已存在的数据集: {dataset_path}")
+                    shutil.rmtree(dataset_path)
+                
+                print(f"  🔧 使用LeRobot官方API创建数据集: {repo_id}")
+                self.lerobot_dataset = LeRobotDataset.create(
+                    repo_id=repo_id,
+                    robot_type=robot_type,
+                    fps=fps,
+                    features={
+                        "observation.images.image": {
+                            "dtype": "image",
+                            "shape": (256, 256, 3),
+                            "names": ["height", "width", "channel"],
+                        },
+                        "observation.images.image2": {
+                            "dtype": "image",
+                            "shape": (256, 256, 3),
+                            "names": ["height", "width", "channel"],
+                        },
+                        "observation.state": {
+                            "dtype": "float32",
+                            "shape": (8,),
+                            "names": ["state"],
+                        },
+                        "action": {
+                            "dtype": "float32",
+                            "shape": (7,),
+                            "names": ["actions"],
+                        },
+                        "timestamp": {
+                            "dtype": "float32",
+                            "shape": (1,),
+                            "names": None,
+                        },
+                        "frame_index": {
+                            "dtype": "int64",
+                            "shape": (1,),
+                            "names": None,
+                        },
+                        "episode_index": {
+                            "dtype": "int64",
+                            "shape": (1,),
+                            "names": None,
+                        },
+                        "index": {
+                            "dtype": "int64",
+                            "shape": (1,),
+                            "names": None,
+                        },
+                        "task_index": {
+                            "dtype": "int64",
+                            "shape": (1,),
+                            "names": None,
+                        },
+                    },
+                    image_writer_threads=10,  # 并行优化
+                    image_writer_processes=5,
+                )
+                print(f"  ✅ LeRobot数据集创建成功")
+            except Exception as e:
+                print(f"  ⚠️  LeRobot官方API初始化失败: {e}")
+                print(f"  ℹ️  将使用传统方法保存数据")
+                self.use_official_api = False
+                self.lerobot_dataset = None
     
     def extract_frames_batch(self, 
                             dataset,
@@ -285,12 +388,43 @@ class DatasetCutter:
         
         return Image.fromarray(tensor_data)
     
+    @staticmethod
+    def _tensor_to_numpy_image(tensor_data):
+        """将Tensor转换为numpy图像（用于LeRobot API）"""
+        if hasattr(tensor_data, 'cpu'):
+            tensor_data = tensor_data.cpu()
+        if hasattr(tensor_data, 'numpy'):
+            tensor_data = tensor_data.numpy()
+        
+        # CHW -> HWC
+        if tensor_data.ndim == 3 and tensor_data.shape[0] == 3:
+            tensor_data = tensor_data.transpose(1, 2, 0)
+        
+        # 0-1 float -> 0-255 uint8
+        if tensor_data.dtype != np.uint8:
+            if tensor_data.max() <= 1.0:
+                tensor_data = (tensor_data * 255).astype(np.uint8)
+            else:
+                tensor_data = tensor_data.astype(np.uint8)
+        
+        return tensor_data
+    
+    @staticmethod
+    def _tensor_to_numpy(tensor_data):
+        """将Tensor转换为numpy数组"""
+        if hasattr(tensor_data, 'cpu'):
+            tensor_data = tensor_data.cpu()
+        if hasattr(tensor_data, 'numpy'):
+            return tensor_data.numpy()
+        return np.array(tensor_data)
+    
     def save_as_lerobot_format_streaming(self,
                                         dataset,
                                         frame_ranges: List[Dict],
                                         max_episodes: Optional[int] = None) -> Path:
         """
-        流式保存数据为LeRobot Parquet格式（批处理，节省内存）
+        流式保存数据为LeRobot格式（批处理，节省内存）
+        支持使用官方API或传统方法
         
         Args:
             dataset: 原始LeRobot数据集
@@ -300,7 +434,139 @@ class DatasetCutter:
         Returns:
             保存的文件路径
         """
-        print(f"💾 流式保存数据为LeRobot Parquet格式...")
+        # 如果使用官方API
+        if self.use_official_api and self.lerobot_dataset is not None:
+            return self._save_with_official_api(dataset, frame_ranges, max_episodes)
+        else:
+            # 使用传统方法
+            return self._save_with_traditional_method(dataset, frame_ranges, max_episodes)
+    
+    def _save_with_official_api(self,
+                                dataset,
+                                frame_ranges: List[Dict],
+                                max_episodes: Optional[int] = None) -> Path:
+        """
+        使用LeRobot官方API保存数据
+        
+        Args:
+            dataset: 原始LeRobot数据集
+            frame_ranges: 帧范围列表
+            max_episodes: 最多保存的episode数量
+            
+        Returns:
+            保存的文件路径
+        """
+        print(f"💾 使用LeRobot官方API保存数据...")
+        print(f"  批处理大小: {self.batch_size} episodes/批")
+        
+        # 限制episode数量
+        total_ranges = min(len(frame_ranges), max_episodes) if max_episodes else len(frame_ranges)
+        
+        # 分批处理
+        for batch_start in range(0, total_ranges, self.batch_size):
+            batch_end = min(batch_start + self.batch_size, total_ranges)
+            
+            print(f"\n  处理批次 [{batch_start}:{batch_end}]/{total_ranges}")
+            
+            # 提取当前批次的帧数据
+            extracted_data = self.extract_frames_batch(
+                dataset, frame_ranges, batch_start, batch_end, verbose=False
+            )
+            
+            # 按episode组织
+            episodes_data = self.organize_by_episode(extracted_data)
+            
+            # 处理每个episode
+            # 用于缓存下一个episode需要的placeholder
+            pending_placeholder = None
+            
+            for cut_range_id, episode_data in sorted(episodes_data.items()):
+                frames = episode_data['frames']
+                metadata = episode_data['metadata']
+                task_name = metadata['new_task']
+                
+                # 如果有待处理的placeholder，先添加到当前episode开头
+                if pending_placeholder is not None:
+                    self.lerobot_dataset.add_frame(pending_placeholder)
+                    pending_placeholder = None
+                    if len(episodes_data) <= 3:
+                        print(f"  ⚡ 在episode {cut_range_id}开头插入placeholder")
+                
+                # 使用官方API逐帧添加
+                for frame_idx, frame in enumerate(frames):
+                    # 转换图像格式（LeRobot API需要numpy格式）
+                    image1 = self._tensor_to_numpy_image(frame['observation.images.image'])
+                    image2 = self._tensor_to_numpy_image(frame['observation.images.image2'])
+                    state = self._tensor_to_numpy(frame['observation.state'])
+                    action = self._tensor_to_numpy(frame['action'])
+                    
+                    # 注意：timestamp, frame_index, episode_index, index, task_index
+                    # 这些字段由官方API自动生成，不需要手动传入
+                    self.lerobot_dataset.add_frame({
+                        "observation.images.image": image1,
+                        "observation.images.image2": image2,
+                        "observation.state": state,
+                        "action": action,
+                        "task": task_name,
+                    })
+                
+                # 检查是否需要为下一个episode准备placeholder
+                if self.insert_placeholders:
+                    next_idx = cut_range_id + 1
+                    if next_idx < len(frame_ranges):
+                        next_metadata = frame_ranges[next_idx]
+                        if next_metadata.get('episode_index', -1) == metadata['episode_index']:
+                            # 同一个chunk，准备placeholder（将在下一个episode开头插入）
+                            last_frame = frames[-1]
+                            image1 = self._tensor_to_numpy_image(last_frame['observation.images.image'])
+                            image2 = self._tensor_to_numpy_image(last_frame['observation.images.image2'])
+                            state = self._tensor_to_numpy(last_frame['observation.state'])
+                            
+                            # Placeholder action全为特殊值
+                            placeholder_action = np.full((7,), self.placeholder_action_value, dtype=np.float32)
+                            
+                            # 准备placeholder数据，但不立即添加
+                            pending_placeholder = {
+                                "observation.images.image": image1,
+                                "observation.images.image2": image2,
+                                "observation.state": state,
+                                "action": placeholder_action,
+                                "task": f"[PLACEHOLDER] {task_name}→{next_metadata.get('new_task', '')}",
+                            }
+                
+                # 保存episode（不包含placeholder）
+                self.lerobot_dataset.save_episode()
+            
+            print(f"  ✓ 批次完成，已保存 {len(episodes_data)} episodes")
+            
+            # 清理内存
+            del extracted_data
+            del episodes_data
+            import gc
+            gc.collect()
+        
+        print(f"\n✅ 使用官方API保存完成!")
+        print(f"  总episodes: {total_ranges}")
+        
+        # 返回数据集路径（使用我们自定义的路径）
+        return self._custom_lerobot_home / self.repo_id
+    
+    def _save_with_traditional_method(self,
+                                     dataset,
+                                     frame_ranges: List[Dict],
+                                     max_episodes: Optional[int] = None) -> Path:
+        """
+        使用传统方法保存数据（向后兼容）
+        
+        Args:
+            dataset: 原始LeRobot数据集
+            frame_ranges: 帧范围列表
+            max_episodes: 最多保存的episode数量
+            
+        Returns:
+            保存的文件路径
+        """
+        print(f"💾 使用传统方法保存数据...")
         print(f"  批处理大小: {self.batch_size} episodes/批")
         
         # 首先构建任务映射表
@@ -800,7 +1066,11 @@ def cut_and_convert_dataset(dataset,
                            batch_size: int = 100,
                            streaming: bool = True,
                            insert_placeholders: bool = False,
-                           placeholder_action_value: float = -999.0) -> Path:
+                           placeholder_action_value: float = -999.0,
+                           repo_id: str = None,
+                           robot_type: str = "panda",
+                           fps: float = 10.0,
+                           use_official_api: bool = True) -> Path:
     """
     完整的数据集裁剪和转换流程
     
@@ -814,13 +1084,19 @@ def cut_and_convert_dataset(dataset,
         streaming: 是否使用流式处理（推荐，节省内存）
         insert_placeholders: 是否在同一chunk的不同segments之间物理插入placeholder（方案3）
         placeholder_action_value: placeholder的action值（默认-999.0）
+        repo_id: HuggingFace repo ID（用于官方API）
+        robot_type: 机器人类型（默认"panda"）
+        fps: 采样频率（默认10.0）
+        use_official_api: 是否使用LeRobot官方API（推荐）
         
     Returns:
         输出目录路径
     """
     cutter = DatasetCutter(output_dir, save_mode=save_mode, batch_size=batch_size,
                           insert_placeholders=insert_placeholders,
-                          placeholder_action_value=placeholder_action_value)
+                          placeholder_action_value=placeholder_action_value,
+                          repo_id=repo_id, robot_type=robot_type, fps=fps,
+                          use_official_api=use_official_api)
     
     # 使用流式处理（推荐）
     if streaming and save_mode in ['lerobot', 'both']:

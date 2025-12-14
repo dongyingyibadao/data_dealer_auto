@@ -3,6 +3,8 @@
 
 完整的Pick/Place数据集自动化处理指南
 
+> 💡 **新功能**: 现已支持LeRobot官方API！查看 [OFFICIAL_API_GUIDE.md](OFFICIAL_API_GUIDE.md) 了解详情。
+
 📚 目录
 ─────────────────────────────────────────────────────────────────────────────
 1. 基本概念
@@ -13,6 +15,7 @@
 6. 常见问题
 7. 故障排除
 8. 扩展和自定义
+9. 相关文档
 
 1️⃣ 基本概念
 ─────────────────────────────────────────────────────────────────────────────
@@ -63,18 +66,20 @@ Pick/Place检测原理
     --llm-api-version 2025-01-01-preview \
     --llm-model gpt-4o 2>&1 | tee data_cut.log
 
-  rm -rf /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut && time python auto_cut_dataset.py \
-    --dataset-path /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/libero \
-    --output-dir /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut \
-    --before-frames 15 \
-    --after-frames 10 \
-    --llm-provider gpt \
-    --end-idx 1000 \
-    --llm-api-key 5ffef770a5b148c5920b7b16329e30fa \
-    --batch-size 10 \
-    --llm-api-base https://gpt.yunstorm.com/ \
-    --llm-api-version 2025-01-01-preview \
-    --llm-model gpt-4o 2>&1 | tee data_cut.log
+  rm -rf /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/dataset_cut && time python auto_cut_dataset.py \
+      --dataset-path /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/libero \
+      --output-dir /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto \
+      --before-frames 15 \
+      --after-frames 10 \
+      --llm-provider gpt \
+      --end-idx 1000 \
+      --llm-api-key 5ffef770a5b148c5920b7b16329e30fa \
+      --batch-size 10 \
+      --llm-api-base https://gpt.yunstorm.com/ \
+      --llm-api-version 2025-01-01-preview \
+      --insert-placeholders \
+      --repo-id dataset_cut \
+      --llm-model gpt-4o 2>&1 | tee data_cut.log
 
   rm -rf /inspire/ssd/project/robot-decision/laijunxi-CZXS25230141/data_dealer_auto/datasets_cut_placeholder && time python auto_cut_dataset.py \
     --dataset-path /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/libero \
@@ -732,6 +737,44 @@ A: 三种方式：
 集成其他数据源
   修改auto_cut_dataset.py中的load_lerobot_dataset()
   支持其他数据格式
+
+9️⃣ 相关文档
+─────────────────────────────────────────────────────────────────────────────
+
+📘 推荐阅读顺序
+
+新手入门：
+  1. README.md - 项目概览
+  2. 本文档 (USAGE_GUIDE.md) - 基础使用
+  3. OFFICIAL_API_GUIDE.md - 官方API使用（推荐）⭐
+
+高级功能：
+  4. LOAD_RANGES_GUIDE.md - --load-ranges参数详解
+  5. CHECKPOINT_GUIDE.md - 断点续传
+  6. LEROBOT_DATASET_PLACEHOLDER_USAGE.md - Placeholder方案1
+
+定制化：
+  7. PROMPT_CUSTOMIZATION_GUIDE.md - LLM提示词定制
+  8. GITHUB_GUIDE.md - Git使用指南
+
+📚 文档链接
+
+- [README.md](../README.md) - 项目主页
+- [OFFICIAL_API_GUIDE.md](OFFICIAL_API_GUIDE.md) - LeRobot官方API集成 ⭐
+- [LOAD_RANGES_GUIDE.md](LOAD_RANGES_GUIDE.md) - --load-ranges详解
+- [CHECKPOINT_GUIDE.md](CHECKPOINT_GUIDE.md) - 断点续传
+- [LEROBOT_DATASET_PLACEHOLDER_USAGE.md](LEROBOT_DATASET_PLACEHOLDER_USAGE.md) - Placeholder方案1
+- [PROMPT_CUSTOMIZATION_GUIDE.md](PROMPT_CUSTOMIZATION_GUIDE.md) - 提示词定制
+- [GITHUB_GUIDE.md](GITHUB_GUIDE.md) - Git指南
+
+🆕 最新更新
+
+v1.1.0 (2025-12-14):
+  ✨ 集成LeRobot官方API
+  ⚡ 性能提升3倍
+  📝 新增OFFICIAL_API_GUIDE.md
+  
+  详见：OFFICIAL_API_GUIDE.md
 
 ================================================================================
 需要帮助？运行：python auto_cut_dataset.py --help

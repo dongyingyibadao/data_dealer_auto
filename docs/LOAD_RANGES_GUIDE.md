@@ -1,5 +1,7 @@
 # 📋 Load Ranges 使用指南
 
+> 💡 **提示**: 推荐配合LeRobot官方API使用，性能更好！详见 [OFFICIAL_API_GUIDE.md](OFFICIAL_API_GUIDE.md)
+
 ## 概述
 
 `--load-ranges` 参数允许您加载之前保存的帧范围分析结果，跳过耗时的夹爪检测过程，直接进行数据转换。这在需要多次处理同一数据集或调整处理参数时非常有用。

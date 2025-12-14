@@ -255,6 +255,14 @@ def main():
                        help='在同一chunk的不同segments之间物理插入placeholder（方案3）')
     parser.add_argument('--placeholder-action-value', type=float, default=-999.0,
                        help='placeholder的action值（默认-999.0）')
+    parser.add_argument('--repo-id', type=str, default=None,
+                       help='HuggingFace repo ID（用于官方API，默认自动生成）')
+    parser.add_argument('--robot-type', type=str, default='panda',
+                       help='机器人类型（默认"panda"）')
+    parser.add_argument('--fps', type=float, default=10.0,
+                       help='采样频率（默认10.0）')
+    parser.add_argument('--use-traditional-method', action='store_true',
+                       help='使用传统方法保存（禁用官方API）')
     
     args = parser.parse_args()
     
@@ -333,7 +341,11 @@ def main():
             batch_size=args.batch_size,
             streaming=not args.no_streaming,
             insert_placeholders=args.insert_placeholders,
-            placeholder_action_value=args.placeholder_action_value
+            placeholder_action_value=args.placeholder_action_value,
+            repo_id=args.repo_id,
+            robot_type=args.robot_type,
+            fps=args.fps,
+            use_official_api=not args.use_traditional_method
         )
         
         print(f"\n✅ 数据集裁剪和转换完成!")
