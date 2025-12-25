@@ -133,6 +133,12 @@ class DatasetCutter:
                             "shape": (1,),
                             "names": None,
                         },
+                        "is_last_segment":{
+                            "dtype": "bool",
+                            "shape": (1,),
+                            "names": None,
+                        }
+                        
                     },
                     image_writer_threads=10,  # 并行优化
                     image_writer_processes=5,
@@ -478,20 +484,25 @@ class DatasetCutter:
             
             # 处理每个episode
             # 用于缓存下一个episode需要的placeholder
-            pending_placeholder = None
+            # pending_placeholder = None
             
             for cut_range_id, episode_data in sorted(episodes_data.items()):
                 frames = episode_data['frames']
                 metadata = episode_data['metadata']
                 task_name = metadata['new_task']
                 
-                # 如果有待处理的placeholder，先添加到当前episode开头
-                if pending_placeholder is not None:
-                    self.lerobot_dataset.add_frame(pending_placeholder)
-                    pending_placeholder = None
-                    if len(episodes_data) <= 3:
-                        print(f"  ⚡ 在episode {cut_range_id}开头插入placeholder")
                 
+                # 判断该segment是否为原始episode的最后一个片段
+                is_last_segment = False
+                next_idx = cut_range_id + 1
+                if next_idx < len(frame_ranges):
+                    next_metadata = frame_ranges[next_idx]
+                    if next_metadata.get('episode_index', -1) != metadata['episode_index']:
+                        is_last_segment = True
+                else:
+                    is_last_segment= True
+                
+                is_last_segment = np.array([is_last_segment])
                 # 使用官方API逐帧添加
                 for frame_idx, frame in enumerate(frames):
                     # 转换图像格式（LeRobot API需要numpy格式）
@@ -508,31 +519,51 @@ class DatasetCutter:
                         "observation.state": state,
                         "action": action,
                         "task": task_name,
+                        "is_last_segment": is_last_segment,
                     })
                 
-                # 检查是否需要为下一个episode准备placeholder
                 if self.insert_placeholders:
-                    next_idx = cut_range_id + 1
-                    if next_idx < len(frame_ranges):
-                        next_metadata = frame_ranges[next_idx]
-                        if next_metadata.get('episode_index', -1) == metadata['episode_index']:
-                            # 同一个chunk，准备placeholder（将在下一个episode开头插入）
-                            last_frame = frames[-1]
-                            image1 = self._tensor_to_numpy_image(last_frame['observation.images.image'])
-                            image2 = self._tensor_to_numpy_image(last_frame['observation.images.image2'])
-                            state = self._tensor_to_numpy(last_frame['observation.state'])
+                    placeholder_action = np.full((7,), self.placeholder_action_value, dtype=np.float32)
+                    last_frame = frames[-1]
+                    image1 = self._tensor_to_numpy_image(last_frame['observation.images.image'])
+                    image2 = self._tensor_to_numpy_image(last_frame['observation.images.image2'])
+                    state = self._tensor_to_numpy(last_frame['observation.state'])
+                    
+
+                    self.lerobot_dataset.add_frame({
+                        "observation.images.image": image1,
+                        "observation.images.image2": image2,
+                        "observation.state": state,
+                        "action": placeholder_action,
+                        "task": task_name,
+                        "is_last_segment": is_last_segment,
+                    })
+                
+                
+                # # 检查是否需要为当前episode末尾准备placeholder
+                # if self.insert_placeholders:
+                #     next_idx = cut_range_id + 1
+                #     if next_idx < len(frame_ranges):
+                #         next_metadata = frame_ranges[next_idx]
+                #         if next_metadata.get('episode_index', -1) == metadata['episode_index']:
+                #             # 同一个chunk，准备placeholder（将在当前episode末尾插入）
+                #             last_frame = frames[-1]
+                #             image1 = self._tensor_to_numpy_image(last_frame['observation.images.image'])
+                #             image2 = self._tensor_to_numpy_image(last_frame['observation.images.image2'])
+                #             state = self._tensor_to_numpy(last_frame['observation.state'])
                             
-                            # Placeholder action全为特殊值
-                            placeholder_action = np.full((7,), self.placeholder_action_value, dtype=np.float32)
+                #             # Placeholder action全为特殊值
+                #             placeholder_action = np.full((7,), self.placeholder_action_value, dtype=np.float32)
                             
-                            # 准备placeholder数据，但不立即添加
-                            pending_placeholder = {
-                                "observation.images.image": image1,
-                                "observation.images.image2": image2,
-                                "observation.state": state,
-                                "action": placeholder_action,
-                                "task": f"[PLACEHOLDER] {task_name}→{next_metadata.get('new_task', '')}",
-                            }
+                #             # 准备placeholder数据
+                #             pending_placeholder = {
+                #                 "observation.images.image": image1,
+                #                 "observation.images.image2": image2,
+                #                 "observation.state": state,
+                #                 "action": placeholder_action,
+                #                 # "task": f"[PLACEHOLDER] {task_name}→{next_metadata.get('new_task', '')}",
+                #                 "task": task_name,
+                #             }
                 
                 # 保存episode（不包含placeholder）
                 self.lerobot_dataset.save_episode()

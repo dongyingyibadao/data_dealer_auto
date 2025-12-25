@@ -88,6 +88,8 @@ Pick/Place检测原理
     --batch-size 10 \
     --insert-placeholders 
 
+python auto_cut_dataset.py --dataset-path /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/libero --output-dir /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus --repo-id dataset_cut_placeholder --load-ranges /inspire/hdd/project/robot-decision/public/datasets/HuggingFaceVLA_cus/datasets_cut/frame_ranges_info.json --batch-size 300 --insert-placeholders
+
   优势：
     ✓ GPT-5视觉理解能力，精准识别操作对象
     ✓ 分析多帧图像（首帧、关键帧、尾帧）
