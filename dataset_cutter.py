@@ -5,7 +5,7 @@ import torch
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import json
 from datetime import datetime
 import copy
@@ -22,9 +22,9 @@ class DatasetCutter:
     2. LeRobot模式：保存为Parquet格式（方便训练）
     """
     
-    def __init__(self, output_dir: str = None, save_mode: str = 'lerobot', batch_size: int = 100,
+    def __init__(self, output_dir: Optional[str] = None, save_mode: str = 'lerobot', batch_size: int = 100,
                  insert_placeholders: bool = False, placeholder_action_value: float = -999.0,
-                 repo_id: str = None, robot_type: str = "panda", fps: float = 10.0,
+                 repo_id: Optional[str] = None, robot_type: str = "panda", fps: float = 10.0,
                  use_official_api: bool = True):
         """
         初始化数据集裁剪器
@@ -86,7 +86,7 @@ class DatasetCutter:
                 self.lerobot_dataset = LeRobotDataset.create(
                     repo_id=repo_id,
                     robot_type=robot_type,
-                    fps=fps,
+                    fps=int(fps),
                     features={
                         "observation.images.image": {
                             "dtype": "image",
@@ -154,7 +154,7 @@ class DatasetCutter:
                             dataset,
                             frame_ranges: List[Dict],
                             batch_start: int = 0,
-                            batch_end: int = None,
+                            batch_end: Optional[int] = None,
                             verbose: bool = True) -> List[Dict]:
         """
         从数据集中批量提取指定范围的帧（避免一次性加载所有数据）
@@ -220,7 +220,7 @@ class DatasetCutter:
         return extracted_data
     
     def organize_by_episode(self, 
-                           extracted_data: List[Dict]) -> Dict[int, List[Dict]]:
+                           extracted_data: List[Dict]) -> Dict[int, Dict]:
         """
         按episode组织提取的数据
         
@@ -464,6 +464,10 @@ class DatasetCutter:
         """
         print(f"💾 使用LeRobot官方API保存数据...")
         print(f"  批处理大小: {self.batch_size} episodes/批")
+
+        if self.lerobot_dataset is None:
+            raise RuntimeError("LeRobot dataset 未初始化")
+        lrd = self.lerobot_dataset
         
         # 限制episode数量
         total_ranges = min(len(frame_ranges), max_episodes) if max_episodes else len(frame_ranges)
@@ -513,7 +517,7 @@ class DatasetCutter:
                     
                     # 注意：timestamp, frame_index, episode_index, index, task_index
                     # 这些字段由官方API自动生成，不需要手动传入
-                    self.lerobot_dataset.add_frame({
+                    lrd.add_frame({
                         "observation.images.image": image1,
                         "observation.images.image2": image2,
                         "observation.state": state,
@@ -530,7 +534,7 @@ class DatasetCutter:
                     state = self._tensor_to_numpy(last_frame['observation.state'])
                     
 
-                    self.lerobot_dataset.add_frame({
+                    lrd.add_frame({
                         "observation.images.image": image1,
                         "observation.images.image2": image2,
                         "observation.state": state,
@@ -566,7 +570,7 @@ class DatasetCutter:
                 #             }
                 
                 # 保存episode（不包含placeholder）
-                self.lerobot_dataset.save_episode()
+                lrd.save_episode()
             
             print(f"  ✓ 批次完成，已保存 {len(episodes_data)} episodes")
             
@@ -1091,14 +1095,14 @@ class DatasetCutter:
 
 def cut_and_convert_dataset(dataset,
                            frame_ranges: List[Dict],
-                           output_dir: str,
+                           output_dir: Optional[str],
                            save_mode: str = 'lerobot',
                            max_episodes: Optional[int] = None,
                            batch_size: int = 100,
                            streaming: bool = True,
                            insert_placeholders: bool = False,
                            placeholder_action_value: float = -999.0,
-                           repo_id: str = None,
+                           repo_id: Optional[str] = None,
                            robot_type: str = "panda",
                            fps: float = 10.0,
                            use_official_api: bool = True) -> Path:

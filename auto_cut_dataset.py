@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 import json
 import sys
-from typing import Optional
+from typing import Optional, Any, Dict
 import time
 from datetime import datetime
 
@@ -28,7 +28,7 @@ from task_description_generator import TaskDescriptionGenerator
 from dataset_cutter import cut_and_convert_dataset
 
 
-def load_lerobot_dataset(dataset_path: str = None):
+def load_lerobot_dataset(dataset_path: Optional[str] = None):
     """
     加载LeRobot数据集
     """
@@ -125,7 +125,7 @@ def generate_task_descriptions(frame_ranges: list,
             start_idx = 0
             completed_ranges = []
     
-    kwargs = {'provider': provider}
+    kwargs: Dict[str, Any] = {'provider': provider}
     if api_key:
         kwargs['api_key'] = api_key
     if api_base:
